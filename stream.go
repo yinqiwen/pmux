@@ -118,7 +118,7 @@ func (s *Stream) updateRemoteSendWindow() error {
 	// Update our window
 	//atomic.AddUint32(&s.recvWindow, delta)
 	atomic.StoreUint32(&s.deltaWindow, 0)
-	if err := s.session.writeFrame(newFrameHeader(flagData, s.id, delta), nil); err != nil {
+	if err := s.session.updateWindow(s.id, delta); err != nil {
 		return err
 	}
 	return nil
@@ -127,7 +127,7 @@ func (s *Stream) updateRemoteSendWindow() error {
 // incrSendWindow updates the size of our send window
 func (s *Stream) incrSendWindow(frame *Frame) error {
 	// Increase window, unblock a sender
-	atomic.AddUint32(&s.sendWindow, frame.Header.Length())
+	atomic.AddUint32(&s.sendWindow, frame.Length())
 	asyncNotify(s.sendNotifyCh)
 	return nil
 }
@@ -140,6 +140,7 @@ func (s *Stream) offerData(data []byte) error {
 	s.recvBuf.Write(data)
 	s.recvLock.Unlock()
 	asyncNotify(s.recvNotifyCh)
+	//log.Printf("####%s %d stream", string(data), len(data))
 	return nil
 }
 
@@ -179,7 +180,7 @@ START:
 
 	// Send the header
 	//s.sendHdr.encode(flagData, s.id, max)
-	if err := s.session.writeFrame(newFrameHeader(flagData, s.id, max), b[:max]); err != nil {
+	if err := s.session.writeFrameHeaderData(newFrameHeader(flagData, s.id), b[:max]); err != nil {
 		return 0, err
 	}
 

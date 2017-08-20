@@ -54,9 +54,12 @@ var (
 	ErrSessionHandshakeMissing = fmt.Errorf("session handshake missing")
 
 	ErrInvalidCipherMethod = fmt.Errorf("invalid cipher method")
+
+	ErrToolargeDataFrame = fmt.Errorf("too large data frame")
 )
 
 const (
 	// initialStreamWindow is the initial stream window size
 	initialStreamWindow uint32 = 256 * 1024
+	maxDataPacketSize   uint32 = 1024 * 1024
 )

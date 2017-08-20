@@ -1,9 +1,6 @@
 package pmux
 
-import (
-	"io"
-	"time"
-)
+import "time"
 
 // Config is used to tune the Yamux session
 type Config struct {
@@ -28,6 +25,21 @@ type Config struct {
 	// window size that we allow for a stream.
 	MaxStreamWindowSize uint32
 
-	// LogOutput is used to control the log destination
-	LogOutput io.Writer
+	EnableCompress bool
+
+	CipherMethod string
+	CipherKey    []byte
+}
+
+// DefaultConfig is used to return a default configuration
+func DefaultConfig() *Config {
+	return &Config{
+		AcceptBacklog:          256,
+		EnableKeepAlive:        true,
+		KeepAliveInterval:      30 * time.Second,
+		ConnectionWriteTimeout: 10 * time.Second,
+		MaxStreamWindowSize:    initialStreamWindow,
+		EnableCompress:         true,
+		CipherKey:              []byte("1231232134325423534265aadasdasfasfdsdasgdfs"),
+	}
 }

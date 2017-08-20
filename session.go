@@ -3,7 +3,6 @@ package pmux
 import (
 	"bufio"
 	"bytes"
-	"crypto/cipher"
 	"io"
 	"log"
 	"math"
@@ -31,25 +30,34 @@ type Session struct {
 	shutdownLock sync.Mutex
 
 	handshakeDone bool
-	cipherStream  cipher.Stream
+
+	cryptoContext *CryptoContext
 }
 
 func (s *Session) closeRemoteStream(id uint32) error {
-	err := s.writeFrame(newFrameHeader(flagFIN, id, 0), nil)
+	err := s.writeFrameHeaderData(newFrameHeader(flagFIN, id), nil)
 	if nil != err {
 		log.Printf("[WARN] pmux: failed to close remote: %v", err)
 	}
 	return err
 }
 
-func (s *Session) writeFrame(header FrameHeader, body []byte) error {
+func (s *Session) writeFrameHeaderData(header FrameHeader, body []byte) error {
 	frame := &Frame{header, body}
+	return s.writeFrame(frame)
+}
+
+func (s *Session) writeFrame(frame *Frame) error {
 	select {
 	case s.sendCh <- frame:
 		return nil
 	case <-s.shutdownCh:
 		return ErrSessionShutdown
 	}
+}
+func (s *Session) updateWindow(sid uint32, delta uint32) error {
+	frame := &Frame{Header: newFrameHeader(flagWindowUpdate, sid)}
+	return s.writeFrame(frame)
 }
 
 func (s *Session) incomingStream(id uint32) (*Stream, error) {
@@ -97,22 +105,29 @@ func (s *Session) recv() {
 	}
 }
 
+func (s *Session) ResetCryptoContext(method string) error {
+	ctx, err := NewCryptoContext(method, s.config.CipherKey)
+	if nil != err {
+		return err
+	}
+	s.cryptoContext = ctx
+	return nil
+}
+
 func (s *Session) recvLoop() error {
 	for !s.shutdown {
 		// Read the frame
 		var frame *Frame
 		var err error
-		if frame, err = recvFrame(s.connReader); err != nil {
+		if frame, err = recvFrame(s.connReader, s.cryptoContext); err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "reset by peer") {
 				log.Printf("[ERROR]: Failed to read frame: %v", err)
 			}
 			return err
 		}
-		if !s.handshakeDone && frame.Header.Flags() != flagHandshake {
-			return ErrSessionHandshakeMissing
-		}
+		//log.Printf("####Recv %d", frame.Header.Flags())
 		// Switch on the type
-		switch frame.Flag() {
+		switch frame.Header.Flags() {
 		case flagData:
 			err = s.handleData(frame)
 		case flagSYN:
@@ -132,13 +147,13 @@ func (s *Session) recvLoop() error {
 func (s *Session) handleHandshake(frame *Frame) error {
 	s.handshakeDone = true
 	s.connReader = bufio.NewReader(s.connReader)
-	s.connReader = &cipher.StreamReader{S: s.cipherStream, R: s.connReader}
-	s.connWriter = &cipher.StreamWriter{S: s.cipherStream, W: s.connWriter}
+	//s.connReader = &cipher.StreamReader{S: s.cipherStream, R: s.connReader}
+	//s.connWriter = &cipher.StreamWriter{S: s.cipherStream, W: s.connWriter}
 	return nil
 }
 
 func (s *Session) handleData(frame *Frame) error {
-	stream := s.getStream(frame.StreamID())
+	stream := s.getStream(frame.Header.StreamID())
 	if nil != stream {
 		return stream.offerData(frame.Body)
 	} else {
@@ -165,7 +180,7 @@ func (s *Session) handleSYN(frame *Frame) error {
 }
 
 func (s *Session) handleFIN(frame *Frame) error {
-	stream := s.getStream(frame.StreamID())
+	stream := s.getStream(frame.Header.StreamID())
 	if nil != stream {
 		stream.Close()
 		s.removeStream(frame.Header.StreamID())
@@ -178,6 +193,14 @@ func (s *Session) send() {
 	readFrames := func() ([]*Frame, error) {
 		var frs []*Frame
 		for len(s.sendCh) > 0 {
+			frame := <-s.sendCh
+			if nil != frame {
+				frs = append(frs, frame)
+			} else {
+				return frs, ErrSessionShutdown
+			}
+		}
+		if len(frs) == 0 {
 			select {
 			case frame := <-s.sendCh:
 				if nil != frame {
@@ -197,12 +220,16 @@ func (s *Session) send() {
 		if nil == err {
 			var buffer bytes.Buffer
 			for _, frame := range frs {
-				buffer.Write(frame.Header)
-				if len(frame.Body) > 0 {
-					buffer.Write(frame.Body)
+				//log.Printf("###Write %d", frame.Header.Flags())
+				err = writeFrame(&buffer, frame, s.cryptoContext)
+				if nil != err {
+					break
 				}
 			}
-			_, err = io.Copy(s.connWriter, &buffer)
+			if nil == err {
+				log.Printf("###Write %d frames", len(frs))
+				_, err = io.Copy(s.connWriter, &buffer)
+			}
 		}
 		if err != nil {
 			log.Printf("[ERR] pmux: Failed to write frames: %v", err)
@@ -282,7 +309,7 @@ GET_ID:
 	s.streams[id] = stream
 	s.streamLock.Unlock()
 
-	err := s.writeFrame(newFrameHeader(flagSYN, id, 0), nil)
+	err := s.writeFrameHeaderData(newFrameHeader(flagSYN, id), nil)
 	if nil != err {
 		return nil, err
 	}
@@ -304,6 +331,17 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		sendCh:   make(chan *Frame, 64),
 		// recvDoneCh: make(chan struct{}),
 		shutdownCh: make(chan struct{}),
+	}
+	//default cipher
+	ctx, err := NewCryptoContext("chacha20poly1305", s.config.CipherKey)
+	if nil != err {
+		panic(err)
+	}
+	s.cryptoContext = ctx
+
+	if config.EnableCompress {
+		//s.connReader = snappy.NewReader(s.connReader)
+		//s.connWriter = snappy.NewWriter(s.connWriter)
 	}
 	if client {
 		s.nextStreamID = 1
