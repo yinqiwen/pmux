@@ -84,7 +84,7 @@ START:
 	s.recvLock.Unlock()
 	s.updateRemoteSendWindow()
 
-	return n, err
+	return n, nil
 WAIT:
 	var timeout <-chan time.Time
 	var timer *time.Timer
@@ -107,7 +107,7 @@ WAIT:
 func (s *Stream) updateRemoteSendWindow() error {
 	max := s.session.config.MaxStreamWindowSize
 	delta := atomic.LoadUint32(&s.deltaWindow)
-	log.Printf("####[%d]deltaWindow %d", s.ID(), delta)
+
 	// Check if we can omit the update
 	if delta < (max / 2) {
 		return nil
@@ -119,6 +119,7 @@ func (s *Stream) updateRemoteSendWindow() error {
 	if err := s.session.updateWindow(s.id, delta); err != nil {
 		return err
 	}
+	log.Printf("####[%d]deltaWindow %d", s.ID(), delta)
 	return nil
 }
 
