@@ -27,8 +27,9 @@ type Config struct {
 
 	EnableCompress bool
 
-	CipherMethod string
-	CipherKey    []byte
+	CipherMethod         string
+	CipherKey            []byte
+	CipherInitialCounter uint64
 }
 
 // DefaultConfig is used to return a default configuration
@@ -39,7 +40,7 @@ func DefaultConfig() *Config {
 		KeepAliveInterval:      30 * time.Second,
 		ConnectionWriteTimeout: 10 * time.Second,
 		MaxStreamWindowSize:    initialStreamWindow,
-		EnableCompress:         true,
+		EnableCompress:         false,
 		CipherKey:              []byte("1231232134325423534265aadasdasfasfdsdasgdfs"),
 	}
 }

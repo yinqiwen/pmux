@@ -3,6 +3,7 @@ package pmux
 import (
 	"bytes"
 	"io"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,15 +69,12 @@ func (s *Stream) ID() uint32 {
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
 START:
-	s.stateLock.Lock()
-	if s.state != streamEstablished {
-		return 0, io.EOF
-	}
-	s.stateLock.Unlock()
-
 	s.recvLock.Lock()
 	if s.recvBuf == nil || s.recvBuf.Len() == 0 {
 		s.recvLock.Unlock()
+		if s.state != streamEstablished {
+			return 0, io.EOF
+		}
 		goto WAIT
 	}
 
@@ -109,7 +107,7 @@ WAIT:
 func (s *Stream) updateRemoteSendWindow() error {
 	max := s.session.config.MaxStreamWindowSize
 	delta := atomic.LoadUint32(&s.deltaWindow)
-
+	log.Printf("####[%d]deltaWindow %d", s.ID(), delta)
 	// Check if we can omit the update
 	if delta < (max / 2) {
 		return nil
@@ -129,6 +127,7 @@ func (s *Stream) incrSendWindow(frame *Frame) error {
 	// Increase window, unblock a sender
 	atomic.AddUint32(&s.sendWindow, frame.Length())
 	asyncNotify(s.sendNotifyCh)
+	log.Printf("####[%d]update send window to %d", s.ID(), s.sendWindow)
 	return nil
 }
 
@@ -149,6 +148,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 	defer s.sendLock.Unlock()
 	total := 0
 	for total < len(p) {
+		//log.Printf("[Stream]Write data %d %d", total, len(p))
 		n, err := s.write(p[total:])
 		total += n
 		if err != nil {
@@ -172,6 +172,7 @@ START:
 	// If there is no data available, block
 	window := atomic.LoadUint32(&s.sendWindow)
 	if window == 0 {
+		log.Printf("####[%d]send window is ZERO", s.ID())
 		goto WAIT
 	}
 
@@ -216,9 +217,8 @@ func (s *Stream) Close() error {
 	if s.state != streamEstablished {
 		return nil
 	}
-	s.forceClose()
 	s.sendClose()
-	s.session.removeStream(s.id)
+	s.forceClose()
 	return nil
 }
 
@@ -236,6 +236,7 @@ func (s *Stream) forceClose() {
 	s.state = streamClosed
 	s.stateLock.Unlock()
 	s.notifyWaiting()
+	s.session.removeStream(s.id)
 }
 
 // SetDeadline sets the read and write deadlines

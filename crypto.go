@@ -74,6 +74,7 @@ func newAESGCMCodec(key []byte) (cipherCodec, error) {
 	if nil != err {
 		return nil, err
 	}
+
 	codec := &ciperAEADCodec{
 		aead:     aead,
 		encnonce: make([]byte, aead.NonceSize()),
@@ -121,9 +122,8 @@ func getCipher(method string, key []byte) (cipherCodec, error) {
 }
 
 type CryptoContext struct {
-	Key       []byte
-	InitialIV []byte
-	cipher    cipherCodec
+	Key    []byte
+	cipher cipherCodec
 
 	decryptCounter uint64
 	encryptCounter uint64
@@ -133,6 +133,7 @@ type CryptoContext struct {
 }
 
 func (ctx *CryptoContext) decodeLength(x uint32) uint32 {
+	//log.Printf("####%v %p", noneCipherCodec == ctx.cipher)
 	if noneCipherCodec == ctx.cipher {
 		return x
 	}
@@ -171,7 +172,7 @@ func (ctx *CryptoContext) decodeData(data []byte) ([]byte, error) {
 	return p, err
 }
 
-func NewCryptoContext(method string, key []byte) (*CryptoContext, error) {
+func NewCryptoContext(method string, key []byte, counter uint64) (*CryptoContext, error) {
 	ctx := &CryptoContext{
 		Key: key,
 		//InitialIV: iv,
@@ -183,6 +184,8 @@ func NewCryptoContext(method string, key []byte) (*CryptoContext, error) {
 	ctx.cipher = codec
 	ctx.encryptLenKey = make([]byte, 10)
 	ctx.decryptLenKey = make([]byte, 10)
+	ctx.encryptCounter = counter
+	ctx.decryptCounter = counter
 	copy(ctx.encryptLenKey[0:2], key[0:2])
 	copy(ctx.decryptLenKey[0:2], key[0:2])
 	return ctx, nil

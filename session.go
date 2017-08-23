@@ -1,15 +1,23 @@
 package pmux
 
 import (
-	"bufio"
 	"bytes"
+	"encoding/binary"
 	"io"
 	"log"
 	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// sendReady is used to either mark a stream as ready
+// or to directly send a header
+type sendReady struct {
+	F   *Frame
+	Err chan error
+}
 
 type Session struct {
 	nextStreamID uint32
@@ -22,7 +30,7 @@ type Session struct {
 	streams    map[uint32]*Stream
 	streamLock sync.Mutex
 	acceptCh   chan *Stream
-	sendCh     chan *Frame
+	sendCh     chan sendReady
 
 	shutdown     bool
 	shutdownErr  error
@@ -48,15 +56,44 @@ func (s *Session) writeFrameHeaderData(header FrameHeader, body []byte) error {
 }
 
 func (s *Session) writeFrame(frame *Frame) error {
+	// if frame.Header.Flags() != flagData {
+	// 	return s.writeFrameNowait(frame)
+	// }
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+
+	ready := sendReady{F: frame, Err: make(chan error, 1)}
 	select {
-	case s.sendCh <- frame:
+	case s.sendCh <- ready:
+	case <-s.shutdownCh:
+		return ErrSessionShutdown
+	case <-timer.C:
+		return ErrConnectionWriteTimeout
+	}
+
+	select {
+	case err := <-ready.Err:
+		return err
+	case <-s.shutdownCh:
+		return ErrSessionShutdown
+	case <-timer.C:
+		return ErrConnectionWriteTimeout
+	}
+}
+
+func (s *Session) writeFrameNowait(frame *Frame) error {
+	ready := sendReady{F: frame}
+	select {
+	case s.sendCh <- ready:
 		return nil
 	case <-s.shutdownCh:
 		return ErrSessionShutdown
 	}
 }
+
 func (s *Session) updateWindow(sid uint32, delta uint32) error {
 	frame := &Frame{Header: newFrameHeader(flagWindowUpdate, sid)}
+	frame.SetLength(delta)
 	return s.writeFrame(frame)
 }
 
@@ -105,13 +142,49 @@ func (s *Session) recv() {
 	}
 }
 
-func (s *Session) ResetCryptoContext(method string) error {
-	ctx, err := NewCryptoContext(method, s.config.CipherKey)
+func (s *Session) ResetCryptoContext(method string, iv uint64) error {
+	ctx, err := NewCryptoContext(method, s.config.CipherKey, iv)
 	if nil != err {
 		return err
 	}
+	//ctx.encryptCounter = ctx.decryptCounter =
 	s.cryptoContext = ctx
 	return nil
+}
+
+func (s *Session) recvFrame(reader io.Reader) (*Frame, error) {
+	lenbuf := make([]byte, 4)
+	_, err := io.ReadAtLeast(reader, lenbuf, len(lenbuf))
+	if nil != err {
+		return nil, err
+	}
+	ctx := s.cryptoContext
+	length := binary.BigEndian.Uint32(lenbuf)
+	length = ctx.decodeLength(length)
+	//log.Printf("[Recv]Read len:%d %d", length, binary.BigEndian.Uint32(lenbuf))
+	if length > maxDataPacketSize {
+		return nil, ErrToolargeDataFrame
+	}
+	buf := make([]byte, length)
+	_, err = io.ReadAtLeast(reader, buf, len(buf))
+	if nil != err {
+		return nil, err
+	}
+	buf, err = ctx.decodeData(buf)
+	if nil != err {
+		return nil, err
+	}
+
+	frame := &Frame{}
+	frame.Header = FrameHeader(buf[0:HeaderLenV1])
+	frame.Body = buf[HeaderLenV1:]
+	//log.Printf("[Recv]Read frame %d %d %d %d %d", length, frame.Header.Flags(), frame.Header.StreamID(), len(frame.Body), ctx.decryptCounter)
+	ctx.incDecryptCounter()
+	if frame.Header.Version() != FrameProtoVersion {
+		return nil, ErrInvalidVersion
+	}
+
+	return frame, nil
 }
 
 func (s *Session) recvLoop() error {
@@ -119,9 +192,9 @@ func (s *Session) recvLoop() error {
 		// Read the frame
 		var frame *Frame
 		var err error
-		if frame, err = recvFrame(s.connReader, s.cryptoContext); err != nil {
+		if frame, err = s.recvFrame(s.connReader); err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "reset by peer") {
-				log.Printf("[ERROR]: Failed to read frame: %v", err)
+				log.Printf("[ERROR]: Failed to read frame: %v while decrypt counter %d ", err, s.cryptoContext.decryptCounter)
 			}
 			return err
 		}
@@ -134,8 +207,8 @@ func (s *Session) recvLoop() error {
 			err = s.handleSYN(frame)
 		case flagFIN:
 			err = s.handleFIN(frame)
-		case flagHandshake:
-			err = s.handleHandshake(frame)
+		case flagWindowUpdate:
+			err = s.handleWindowUpdate(frame)
 		default:
 			return ErrInvalidMsgType
 
@@ -144,11 +217,13 @@ func (s *Session) recvLoop() error {
 	return ErrSessionShutdown
 }
 
-func (s *Session) handleHandshake(frame *Frame) error {
-	s.handshakeDone = true
-	s.connReader = bufio.NewReader(s.connReader)
-	//s.connReader = &cipher.StreamReader{S: s.cipherStream, R: s.connReader}
-	//s.connWriter = &cipher.StreamWriter{S: s.cipherStream, W: s.connWriter}
+func (s *Session) handleWindowUpdate(frame *Frame) error {
+	stream := s.getStream(frame.Header.StreamID())
+	if nil != stream {
+		stream.incrSendWindow(frame)
+	} else {
+		s.closeRemoteStream(frame.Header.StreamID())
+	}
 	return nil
 }
 
@@ -182,32 +257,24 @@ func (s *Session) handleSYN(frame *Frame) error {
 func (s *Session) handleFIN(frame *Frame) error {
 	stream := s.getStream(frame.Header.StreamID())
 	if nil != stream {
-		stream.Close()
-		s.removeStream(frame.Header.StreamID())
+		stream.forceClose()
+		//s.removeStream(frame.Header.StreamID())
 	}
 	return nil
 }
 
 // send is a long running goroutine that sends data
 func (s *Session) send() {
-	readFrames := func() ([]*Frame, error) {
-		var frs []*Frame
+	readFrames := func() ([]sendReady, error) {
+		var frs []sendReady
 		for len(s.sendCh) > 0 {
 			frame := <-s.sendCh
-			if nil != frame {
-				frs = append(frs, frame)
-			} else {
-				return frs, ErrSessionShutdown
-			}
+			frs = append(frs, frame)
 		}
 		if len(frs) == 0 {
 			select {
 			case frame := <-s.sendCh:
-				if nil != frame {
-					frs = append(frs, frame)
-				} else {
-					return frs, ErrSessionShutdown
-				}
+				frs = append(frs, frame)
 			case <-s.shutdownCh:
 				return frs, ErrSessionShutdown
 			}
@@ -221,14 +288,19 @@ func (s *Session) send() {
 			var buffer bytes.Buffer
 			for _, frame := range frs {
 				//log.Printf("###Write %d", frame.Header.Flags())
-				err = writeFrame(&buffer, frame, s.cryptoContext)
+				//log.Printf("###Enc counter %d", s.cryptoContext.encryptCounter)
+				err = writeFrame(&buffer, frame.F, s.cryptoContext)
 				if nil != err {
 					break
 				}
 			}
 			if nil == err {
-				log.Printf("###Write %d frames", len(frs))
 				_, err = io.Copy(s.connWriter, &buffer)
+			}
+		}
+		for _, frame := range frs {
+			if nil != frame.Err {
+				asyncSendErr(frame.Err, err)
 			}
 		}
 		if err != nil {
@@ -328,16 +400,16 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		// inflight:   make(map[uint32]struct{}),
 		// synCh:      make(chan struct{}, config.AcceptBacklog),
 		acceptCh: make(chan *Stream, 5),
-		sendCh:   make(chan *Frame, 64),
+		sendCh:   make(chan sendReady, 64),
 		// recvDoneCh: make(chan struct{}),
 		shutdownCh: make(chan struct{}),
 	}
 	//default cipher
-	ctx, err := NewCryptoContext("chacha20poly1305", s.config.CipherKey)
+
+	err := s.ResetCryptoContext(s.config.CipherMethod, s.config.CipherInitialCounter)
 	if nil != err {
 		panic(err)
 	}
-	s.cryptoContext = ctx
 
 	if config.EnableCompress {
 		//s.connReader = snappy.NewReader(s.connReader)
