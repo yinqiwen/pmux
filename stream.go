@@ -1,7 +1,6 @@
 package pmux
 
 import (
-	"bytes"
 	"io"
 	"log"
 	"sync"
@@ -28,7 +27,8 @@ type Stream struct {
 	state     streamState
 	stateLock sync.Mutex
 
-	recvBuf  *bytes.Buffer
+	//recvBuf  *bytes.Buffer
+	recvBuf  ByteSliceBuffer
 	recvLock sync.Mutex
 
 	//controlErr     chan error
@@ -70,7 +70,7 @@ func (s *Stream) ID() uint32 {
 func (s *Stream) Read(b []byte) (n int, err error) {
 START:
 	s.recvLock.Lock()
-	if s.recvBuf == nil || s.recvBuf.Len() == 0 {
+	if s.recvBuf.Len() == 0 {
 		s.recvLock.Unlock()
 		if s.state != streamEstablished {
 			return 0, io.EOF
@@ -105,11 +105,11 @@ WAIT:
 }
 
 func (s *Stream) updateRemoteSendWindow() error {
-	max := s.session.config.MaxStreamWindowSize
+	//max := s.session.config.MaxStreamWindowSize
 	delta := atomic.LoadUint32(&s.deltaWindow)
 
 	// Check if we can omit the update
-	if delta < (max / 2) {
+	if delta < s.session.config.StreamMinRefresh {
 		return nil
 	}
 
@@ -134,9 +134,6 @@ func (s *Stream) incrSendWindow(frame *Frame) error {
 
 func (s *Stream) offerData(data []byte) error {
 	s.recvLock.Lock()
-	if nil == s.recvBuf || s.recvBuf.Len() == 0 {
-		s.recvBuf = &bytes.Buffer{}
-	}
 	s.recvBuf.Write(data)
 	s.recvLock.Unlock()
 	asyncNotify(s.recvNotifyCh)
@@ -261,15 +258,4 @@ func (s *Stream) SetReadDeadline(t time.Time) error {
 func (s *Stream) SetWriteDeadline(t time.Time) error {
 	s.writeDeadline = t
 	return nil
-}
-
-// Shrink is used to compact the amount of buffers utilized
-// This is useful when using Yamux in a connection pool to reduce
-// the idle memory utilization.
-func (s *Stream) Shrink() {
-	s.recvLock.Lock()
-	if s.recvBuf != nil && s.recvBuf.Len() == 0 {
-		s.recvBuf = nil
-	}
-	s.recvLock.Unlock()
 }

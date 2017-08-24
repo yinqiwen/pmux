@@ -24,6 +24,7 @@ type Config struct {
 	// MaxStreamWindowSize is used to control the maximum
 	// window size that we allow for a stream.
 	MaxStreamWindowSize uint32
+	StreamMinRefresh    uint32
 
 	EnableCompress bool
 
@@ -40,6 +41,7 @@ func DefaultConfig() *Config {
 		KeepAliveInterval:      30 * time.Second,
 		ConnectionWriteTimeout: 10 * time.Second,
 		MaxStreamWindowSize:    initialStreamWindow,
+		StreamMinRefresh:       uint32(32 << 10),
 		EnableCompress:         false,
 		CipherKey:              []byte("1231232134325423534265aadasdasfasfdsdasgdfs"),
 	}
