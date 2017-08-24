@@ -119,7 +119,7 @@ func (s *Stream) updateRemoteSendWindow() error {
 	if err := s.session.updateWindow(s.id, delta); err != nil {
 		return err
 	}
-	log.Printf("####[%d]deltaWindow %d", s.ID(), delta)
+	//log.Printf("####[%d]deltaWindow %d", s.ID(), delta)
 	return nil
 }
 
@@ -128,7 +128,7 @@ func (s *Stream) incrSendWindow(frame *Frame) error {
 	// Increase window, unblock a sender
 	atomic.AddUint32(&s.sendWindow, frame.Length())
 	asyncNotify(s.sendNotifyCh)
-	log.Printf("####[%d]update send window to %d", s.ID(), s.sendWindow)
+	//log.Printf("####[%d]update send window to %d", s.ID(), s.sendWindow)
 	return nil
 }
 
@@ -170,7 +170,7 @@ START:
 	// If there is no data available, block
 	window := atomic.LoadUint32(&s.sendWindow)
 	if window == 0 {
-		log.Printf("####[%d]send window is ZERO", s.ID())
+		log.Printf("[%d]send window is ZERO", s.ID())
 		goto WAIT
 	}
 
