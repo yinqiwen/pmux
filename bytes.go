@@ -8,8 +8,16 @@ import "io"
 
 type ByteSliceBuffer [][]byte
 
-func (buf *ByteSliceBuffer) Read(p []byte) (int, error) {
+func (buf *ByteSliceBuffer) Take() []byte {
+	if len(*buf) == 0 {
+		return nil
+	}
+	ret := (*buf)[0]
+	*buf = (*buf)[1:]
+	return ret
+}
 
+func (buf *ByteSliceBuffer) Read(p []byte) (int, error) {
 	if len(*buf) == 0 {
 		return 0, io.EOF
 	}

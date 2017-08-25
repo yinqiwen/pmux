@@ -66,6 +66,54 @@ func (s *Stream) ID() uint32 {
 	return s.id
 }
 
+func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
+	total := int64(0)
+START:
+	s.recvLock.Lock()
+	if s.recvBuf.Len() == 0 {
+		s.recvLock.Unlock()
+		if s.state != streamEstablished {
+			return total, io.EOF
+		}
+		goto WAIT
+	}
+	s.recvLock.Unlock()
+	for {
+		s.recvLock.Lock()
+		b := s.recvBuf.Take()
+		s.recvLock.Unlock()
+		if len(b) > 0 {
+			// Read any bytes
+			n := len(b)
+			atomic.AddUint32(&s.deltaWindow, uint32(n))
+			_, err := w.Write(b)
+			if nil != err {
+				return total, err
+			}
+		} else {
+			break
+		}
+	}
+	s.updateRemoteSendWindow()
+WAIT:
+	var timeout <-chan time.Time
+	var timer *time.Timer
+	if !s.readDeadline.IsZero() {
+		delay := s.readDeadline.Sub(time.Now())
+		timer = time.NewTimer(delay)
+		timeout = timer.C
+	}
+	select {
+	case <-s.recvNotifyCh:
+		if timer != nil {
+			timer.Stop()
+		}
+		goto START
+	case <-timeout:
+		return total, ErrTimeout
+	}
+}
+
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
 START:
@@ -216,7 +264,7 @@ func (s *Stream) Close() error {
 		return nil
 	}
 	s.sendClose()
-	s.forceClose()
+	s.forceClose(true)
 	return nil
 }
 
@@ -229,12 +277,14 @@ func (s *Stream) sendClose() error {
 }
 
 // forceClose is used for when the session is exiting
-func (s *Stream) forceClose() {
+func (s *Stream) forceClose(remove bool) {
 	s.stateLock.Lock()
 	s.state = streamClosed
 	s.stateLock.Unlock()
 	s.notifyWaiting()
-	s.session.removeStream(s.id)
+	if remove {
+		s.session.removeStream(s.id)
+	}
 }
 
 // SetDeadline sets the read and write deadlines

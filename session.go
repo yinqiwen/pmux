@@ -257,7 +257,7 @@ func (s *Session) handleSYN(frame *Frame) error {
 func (s *Session) handleFIN(frame *Frame) error {
 	stream := s.getStream(frame.Header.StreamID())
 	if nil != stream {
-		stream.forceClose()
+		stream.forceClose(true)
 		//s.removeStream(frame.Header.StreamID())
 	}
 	return nil
@@ -317,6 +317,7 @@ func (s *Session) Close() error {
 	s.shutdownLock.Lock()
 	defer s.shutdownLock.Unlock()
 
+	//log.Printf("###Close sesion with %v", s.shutdown)
 	if s.shutdown {
 		return nil
 	}
@@ -324,13 +325,18 @@ func (s *Session) Close() error {
 	if s.shutdownErr == nil {
 		s.shutdownErr = ErrSessionShutdown
 	}
+	asyncNotify(s.shutdownCh)
+	select {
+	case s.acceptCh <- nil:
+	default:
+	}
 	close(s.shutdownCh)
 	s.conn.Close()
 
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	for _, stream := range s.streams {
-		stream.forceClose()
+		stream.forceClose(false)
 	}
 	return nil
 }
@@ -338,8 +344,14 @@ func (s *Session) Close() error {
 // AcceptStream is used to block until the next available stream
 // is ready to be accepted.
 func (s *Session) AcceptStream() (*Stream, error) {
+	if s.shutdown {
+		return nil, ErrSessionShutdown
+	}
 	select {
 	case stream := <-s.acceptCh:
+		if nil == stream {
+			return nil, ErrSessionShutdown
+		}
 		return stream, nil
 	case <-s.shutdownCh:
 		return nil, ErrSessionShutdown
