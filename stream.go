@@ -190,8 +190,8 @@ func (s *Stream) offerData(data []byte) error {
 }
 
 func (s *Stream) Write(p []byte) (int, error) {
-	s.sendLock.Lock()
-	defer s.sendLock.Unlock()
+	// s.sendLock.Lock()
+	// defer s.sendLock.Unlock()
 	total := 0
 	for total < len(p) {
 		//log.Printf("[Stream]Write data %d %d", total, len(p))

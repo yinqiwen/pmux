@@ -6,6 +6,14 @@ import (
 	"encoding/binary"
 
 	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/salsa20"
+)
+
+const (
+	CipherNone             = "none"
+	CipherSalsa20          = "salsa20"
+	CipherChacha20Poly1305 = "chacha20poly1305"
+	CipherAES256GCM        = "aes256-gcm"
 )
 
 type cipherCodec interface {
@@ -26,19 +34,6 @@ func (s *noneCodec) Decrypt(data []byte, counter uint64) ([]byte, error) {
 
 var noneCipherCodec = &noneCodec{}
 
-// type cipherStreamCodec struct {
-// 	Stream cipher.Stream
-// }
-
-// func (s *cipherStreamCodec) Encrypt(data []byte, counter uint64) ([]byte, error) {
-// 	s.Stream.XORKeyStream(data, data)
-// 	return data, nil
-// }
-// func (s *cipherStreamCodec) Decrypt(data []byte, counter uint64) ([]byte, error) {
-// 	s.Stream.XORKeyStream(data, data)
-// 	return data, nil
-// }
-
 type ciperAEADCodec struct {
 	aead     cipher.AEAD
 	encnonce []byte
@@ -47,17 +42,33 @@ type ciperAEADCodec struct {
 
 func (s *ciperAEADCodec) Encrypt(data []byte, counter uint64) ([]byte, error) {
 	binary.BigEndian.PutUint64(s.encnonce, counter)
-	data = s.aead.Seal(nil, s.encnonce, data, nil)
+	data = s.aead.Seal(data[:0], s.encnonce, data, nil)
 	return data, nil
 }
 func (s *ciperAEADCodec) Decrypt(data []byte, counter uint64) ([]byte, error) {
 	binary.BigEndian.PutUint64(s.decnonce, counter)
-	return s.aead.Open(nil, s.decnonce, data, nil)
+	return s.aead.Open(data[:0], s.decnonce, data, nil)
+}
+
+type salsa20Codec struct {
+	salsa20Key [32]byte
+	encnonce   []byte
+	decnonce   []byte
+}
+
+func (s *salsa20Codec) Encrypt(data []byte, counter uint64) ([]byte, error) {
+	binary.BigEndian.PutUint64(s.encnonce, counter)
+	salsa20.XORKeyStream(data, data, s.encnonce, &s.salsa20Key)
+	return data, nil
+}
+func (s *salsa20Codec) Decrypt(data []byte, counter uint64) ([]byte, error) {
+	binary.BigEndian.PutUint64(s.decnonce, counter)
+	salsa20.XORKeyStream(data, data, s.decnonce, &s.salsa20Key)
+	return data, nil
 }
 
 type cipherInfo struct {
 	keyLen         int
-	ivLen          int
 	newCipherCodec func(key []byte) (cipherCodec, error)
 }
 
@@ -83,7 +94,7 @@ func newAESGCMCodec(key []byte) (cipherCodec, error) {
 	return codec, nil
 }
 
-func newChacha20Poly1035Codec(key []byte) (cipherCodec, error) {
+func newChacha20Poly1305Codec(key []byte) (cipherCodec, error) {
 	aead, err := chacha20poly1305.New(key)
 	if nil != err {
 		return nil, err
@@ -96,10 +107,20 @@ func newChacha20Poly1035Codec(key []byte) (cipherCodec, error) {
 	return codec, nil
 }
 
+func newSalsa20Codec(key []byte) (cipherCodec, error) {
+	codec := &salsa20Codec{
+		encnonce: make([]byte, 24),
+		decnonce: make([]byte, 24),
+	}
+	copy(codec.salsa20Key[:], key[:32])
+	return codec, nil
+}
+
 var cipherMethodTable = map[string]*cipherInfo{
-	"aes256-gcm":       {32, 32, newAESGCMCodec},
-	"chacha20poly1305": {32, 12, newChacha20Poly1035Codec},
-	"none":             {32, 8, newNoneCipher},
+	CipherAES256GCM:        {32, newAESGCMCodec},
+	CipherChacha20Poly1305: {32, newChacha20Poly1305Codec},
+	CipherSalsa20:          {32, newSalsa20Codec},
+	CipherNone:             {32, newNoneCipher},
 }
 
 func getCipher(method string, key []byte) (cipherCodec, error) {
