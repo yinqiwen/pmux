@@ -27,10 +27,12 @@ type Session struct {
 	connWriter   io.Writer
 	// bufRead is a buffered reader
 	//bufRead  *bufio.Reader
-	streams    map[uint32]*Stream
-	streamLock sync.Mutex
-	acceptCh   chan *Stream
-	sendCh     chan sendReady
+	//streams    map[uint32]*Stream
+	//streamLock sync.Mutex
+	streams        sync.Map
+	streamsCounter int32
+	acceptCh       chan *Stream
+	sendCh         chan sendReady
 
 	shutdown     bool
 	shutdownErr  error
@@ -98,33 +100,33 @@ func (s *Session) updateWindow(sid uint32, delta uint32) error {
 }
 
 func (s *Session) incomingStream(id uint32) (*Stream, error) {
-	s.streamLock.Lock()
-	if _, ok := s.streams[id]; ok {
-		s.streamLock.Unlock()
+	//s.streamLock.Lock()
+	ss := newStream(s, id)
+	if _, loaded := s.streams.LoadOrStore(id, ss); loaded {
 		log.Printf("[ERR]: duplicate stream declared")
 		s.closeRemoteStream(id)
 		return nil, ErrDuplicateStream
 	}
-	ss := newStream(s, id)
-	s.streams[id] = ss
-	s.streamLock.Unlock()
+	atomic.AddInt32(&s.streamsCounter, 1)
 	return ss, nil
 }
 
 func (s *Session) getStream(sid uint32) *Stream {
-	s.streamLock.Lock()
-	stream, exist := s.streams[sid]
-	s.streamLock.Unlock()
+	//s.streamLock.Lock()
+	stream, exist := s.streams.Load(sid)
+	//s.streamLock.Unlock()
 	if exist {
-		return stream
+		return stream.(*Stream)
 	}
 	return nil
 }
 
 func (s *Session) removeStream(sid uint32) {
-	s.streamLock.Lock()
-	delete(s.streams, sid)
-	s.streamLock.Unlock()
+	//s.streamLock.Lock()
+	//delete(s.streams, sid)
+	//s.streamLock.Unlock()
+	s.streams.Delete(sid)
+	atomic.AddInt32(&s.streamsCounter, -1)
 }
 
 func (s *Session) exitErr(err error) {
@@ -245,9 +247,8 @@ func (s *Session) handleSYN(frame *Frame) error {
 			return nil
 		default:
 			// Backlog exceeded! RST the stream
-			log.Printf("[WARN] pmux: backlog exceeded, forcing connection reset")
-			s.removeStream(frame.Header.StreamID())
-			s.closeRemoteStream(frame.Header.StreamID())
+			log.Printf("[WARN] pmux: backlog exceeded:%d, forcing connection reset", len(s.acceptCh))
+			stream.Close()
 		}
 		return nil
 	}
@@ -258,7 +259,6 @@ func (s *Session) handleFIN(frame *Frame) error {
 	stream := s.getStream(frame.Header.StreamID())
 	if nil != stream {
 		stream.forceClose(true)
-		//s.removeStream(frame.Header.StreamID())
 	}
 	return nil
 }
@@ -311,6 +311,10 @@ func (s *Session) send() {
 	}
 }
 
+func (s *Session) NumStreams() int {
+	return int(s.streamsCounter)
+}
+
 // Close is used to close the session and all streams.
 // Attempts to send a GoAway before closing the connection.
 func (s *Session) Close() error {
@@ -333,11 +337,13 @@ func (s *Session) Close() error {
 	close(s.shutdownCh)
 	s.conn.Close()
 
-	s.streamLock.Lock()
-	defer s.streamLock.Unlock()
-	for _, stream := range s.streams {
+	//s.streamLock.Lock()
+	//defer s.streamLock.Unlock()
+	s.streams.Range(func(key, value interface{}) bool {
+		stream := value.(*Stream)
 		stream.forceClose(false)
-	}
+		return true
+	})
 	return nil
 }
 
@@ -356,14 +362,6 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case <-s.shutdownCh:
 		return nil, ErrSessionShutdown
 	}
-}
-
-// NumStreams returns the number of currently open streams
-func (s *Session) NumStreams() int {
-	s.streamLock.Lock()
-	num := len(s.streams)
-	s.streamLock.Unlock()
-	return num
 }
 
 // IsClosed does a safe check to see if we have shutdown
@@ -389,9 +387,8 @@ GET_ID:
 
 	// Register the stream
 	stream := newStream(s, id)
-	s.streamLock.Lock()
-	s.streams[id] = stream
-	s.streamLock.Unlock()
+	s.streams.Store(id, stream)
+	atomic.AddInt32(&s.streamsCounter, 1)
 
 	err := s.writeFrameHeaderData(newFrameHeader(flagSYN, id), nil)
 	if nil != err {
@@ -408,10 +405,10 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		connReader: conn,
 		connWriter: conn,
 		// pings:      make(map[uint32]chan struct{}),
-		streams: make(map[uint32]*Stream),
+		//streams: make(map[uint32]*Stream),
 		// inflight:   make(map[uint32]struct{}),
 		// synCh:      make(chan struct{}, config.AcceptBacklog),
-		acceptCh: make(chan *Stream, 5),
+		acceptCh: make(chan *Stream, 64),
 		sendCh:   make(chan sendReady, 64),
 		// recvDoneCh: make(chan struct{}),
 		shutdownCh: make(chan struct{}),
