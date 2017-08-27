@@ -16,6 +16,8 @@ const (
 	flagFIN
 	flagData
 	flagWindowUpdate
+	flagPing
+	flagPingACK
 
 	flagHandshake = byte(100)
 )

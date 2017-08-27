@@ -33,6 +33,7 @@ type Session struct {
 	streamsCounter int32
 	acceptCh       chan *Stream
 	sendCh         chan sendReady
+	pingCh         chan struct{}
 
 	shutdown     bool
 	shutdownErr  error
@@ -42,6 +43,48 @@ type Session struct {
 	handshakeDone bool
 
 	cryptoContext *CryptoContext
+}
+
+// keepalive is a long running goroutine that periodically does
+// a ping to keep the connection alive.
+func (s *Session) keepalive() {
+	for !s.shutdown {
+		select {
+		case <-time.After(s.config.KeepAliveInterval):
+			duration, err := s.Ping()
+			if err != nil {
+				log.Printf("[ERR] pmux: keepalive failed: %v", err)
+				//s.exitErr(ErrKeepAliveTimeout)
+				//return
+			} else {
+				log.Printf("Cost %v to ping remote", duration)
+			}
+		case <-s.shutdownCh:
+			return
+		}
+	}
+}
+
+// Ping is used to measure the RTT response time
+func (s *Session) Ping() (time.Duration, error) {
+	// Send the ping request
+	err := s.writeFrameHeaderData(newFrameHeader(flagPing, 0), nil)
+	if nil != err {
+		return 0, err
+	}
+
+	// Wait for a response
+	start := time.Now()
+	select {
+	case <-s.pingCh:
+	case <-time.After(s.config.ConnectionWriteTimeout):
+		return 0, ErrTimeout
+	case <-s.shutdownCh:
+		return 0, ErrSessionShutdown
+	}
+
+	// Compute the RTT
+	return time.Now().Sub(start), nil
 }
 
 func (s *Session) closeRemoteStream(id uint32) error {
@@ -211,6 +254,10 @@ func (s *Session) recvLoop() error {
 			err = s.handleFIN(frame)
 		case flagWindowUpdate:
 			err = s.handleWindowUpdate(frame)
+		case flagPing:
+			s.writeFrameNowait(&Frame{Header: newFrameHeader(flagPingACK, frame.Header.StreamID())})
+		case flagPingACK:
+			asyncNotify(s.pingCh)
 		default:
 			return ErrInvalidMsgType
 
@@ -412,6 +459,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		sendCh:   make(chan sendReady, 64),
 		// recvDoneCh: make(chan struct{}),
 		shutdownCh: make(chan struct{}),
+		pingCh:     make(chan struct{}),
 	}
 	//default cipher
 
@@ -431,8 +479,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	}
 	go s.recv()
 	go s.send()
-	// if config.EnableKeepAlive {
-	// 	go s.keepalive()
-	// }
+	if config.EnableKeepAlive {
+		go s.keepalive()
+	}
 	return s
 }
