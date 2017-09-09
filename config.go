@@ -20,6 +20,7 @@ type Config struct {
 	// close it. This is only applied to writes, where's there's generally
 	// an expectation that things will move along quickly.
 	ConnectionWriteTimeout time.Duration
+	PingTimeout            time.Duration
 
 	// MaxStreamWindowSize is used to control the maximum
 	// window size that we allow for a stream.
@@ -40,6 +41,7 @@ func DefaultConfig() *Config {
 		EnableKeepAlive:        true,
 		KeepAliveInterval:      30 * time.Second,
 		ConnectionWriteTimeout: 10 * time.Second,
+		PingTimeout:            10 * time.Second,
 		MaxStreamWindowSize:    initialStreamWindow,
 		StreamMinRefresh:       uint32(32 << 10),
 		EnableCompress:         false,

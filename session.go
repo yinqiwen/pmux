@@ -54,8 +54,10 @@ func (s *Session) keepalive() {
 			duration, err := s.Ping()
 			if err != nil {
 				log.Printf("[ERR] pmux: keepalive failed: %v", err)
-				//s.exitErr(ErrKeepAliveTimeout)
-				//return
+				if err == ErrTimeout {
+					s.Close()
+					return
+				}
 			} else {
 				log.Printf("Cost %v to ping remote", duration)
 			}
@@ -77,7 +79,7 @@ func (s *Session) Ping() (time.Duration, error) {
 	start := time.Now()
 	select {
 	case <-s.pingCh:
-	case <-time.After(s.config.ConnectionWriteTimeout):
+	case <-time.After(s.config.PingTimeout):
 		return 0, ErrTimeout
 	case <-s.shutdownCh:
 		return 0, ErrSessionShutdown
