@@ -41,7 +41,7 @@ func DefaultConfig() *Config {
 		EnableKeepAlive:        true,
 		KeepAliveInterval:      30 * time.Second,
 		ConnectionWriteTimeout: 10 * time.Second,
-		PingTimeout:            10 * time.Second,
+		PingTimeout:            5 * time.Second,
 		MaxStreamWindowSize:    initialStreamWindow,
 		StreamMinRefresh:       uint32(32 << 10),
 		EnableCompress:         false,

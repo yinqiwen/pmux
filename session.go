@@ -390,7 +390,7 @@ func (s *Session) Close() error {
 	//defer s.streamLock.Unlock()
 	s.streams.Range(func(key, value interface{}) bool {
 		stream := value.(*Stream)
-		stream.forceClose(false)
+		stream.forceClose(true)
 		return true
 	})
 	return nil
