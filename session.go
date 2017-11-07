@@ -51,15 +51,13 @@ func (s *Session) keepalive() {
 	for !s.shutdown {
 		select {
 		case <-time.After(s.config.KeepAliveInterval):
-			duration, err := s.Ping()
+			_, err := s.Ping()
 			if err != nil {
 				log.Printf("[ERR] pmux: keepalive failed: %v", err)
 				if err == ErrTimeout {
 					s.Close()
 					return
 				}
-			} else {
-				log.Printf("Cost %v to ping remote", duration)
 			}
 		case <-s.shutdownCh:
 			return
@@ -335,17 +333,23 @@ func (s *Session) send() {
 		frs, err := readFrames()
 		if nil == err {
 			var buffer bytes.Buffer
-			for _, frame := range frs {
-				//log.Printf("###Write %d", frame.Header.Flags())
-				//log.Printf("###Enc counter %d", s.cryptoContext.encryptCounter)
-				err = writeFrame(&buffer, frame.F, s.cryptoContext)
+			if len(frs) == 1 {
+				err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
 				if nil != err {
 					break
 				}
+			} else {
+				for _, frame := range frs {
+					err = writeFrame(&buffer, frame.F, s.cryptoContext)
+					if nil != err {
+						break
+					}
+				}
+				if nil == err {
+					_, err = io.Copy(s.connWriter, &buffer)
+				}
 			}
-			if nil == err {
-				_, err = io.Copy(s.connWriter, &buffer)
-			}
+
 		}
 		for _, frame := range frs {
 			if nil != frame.Err {
@@ -353,7 +357,9 @@ func (s *Session) send() {
 			}
 		}
 		if err != nil {
-			log.Printf("[ERR] pmux: Failed to write frames: %v", err)
+			if err != ErrSessionShutdown {
+				log.Printf("[ERR] pmux: Failed to write frames: %v", err)
+			}
 			s.exitErr(err)
 			return
 		}
