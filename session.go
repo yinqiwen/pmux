@@ -15,7 +15,7 @@ import (
 // sendReady is used to either mark a stream as ready
 // or to directly send a header
 type sendReady struct {
-	F   *Frame
+	F   Frame
 	Err chan error
 }
 
@@ -39,6 +39,7 @@ type Session struct {
 	shutdownErr  error
 	shutdownCh   chan struct{}
 	shutdownLock sync.Mutex
+	initCh       chan struct{}
 
 	handshakeDone bool
 
@@ -68,7 +69,7 @@ func (s *Session) keepalive() {
 // Ping is used to measure the RTT response time
 func (s *Session) Ping() (time.Duration, error) {
 	// Send the ping request
-	err := s.writeFrameHeaderData(newFrameHeader(flagPing, 0), nil)
+	err := s.writeFrameNowait(newFrame(flagPing, 0, 0, nil))
 	if nil != err {
 		return 0, err
 	}
@@ -88,26 +89,24 @@ func (s *Session) Ping() (time.Duration, error) {
 }
 
 func (s *Session) closeRemoteStream(id uint32) error {
-	err := s.writeFrameHeaderData(newFrameHeader(flagFIN, id), nil)
+	err := s.writeFrameNowait(newFrame(flagFIN, id, 0, nil))
 	if nil != err {
 		log.Printf("[WARN] pmux: failed to close remote: %v", err)
 	}
 	return err
 }
 
-func (s *Session) writeFrameHeaderData(header FrameHeader, body []byte) error {
-	frame := &Frame{header, body}
-	return s.writeFrame(frame)
-}
-
-func (s *Session) writeFrame(frame *Frame) error {
+func (s *Session) doWriteFrame(frame Frame, noWait bool) error {
 	// if frame.Header.Flags() != flagData {
 	// 	return s.writeFrameNowait(frame)
 	// }
 	timer := time.NewTimer(30 * time.Second)
 	defer timer.Stop()
 
-	ready := sendReady{F: frame, Err: make(chan error, 1)}
+	ready := sendReady{F: frame, Err: nil}
+	if !noWait {
+		ready.Err = make(chan error, 1)
+	}
 	select {
 	case s.sendCh <- ready:
 	case <-s.shutdownCh:
@@ -115,31 +114,30 @@ func (s *Session) writeFrame(frame *Frame) error {
 	case <-timer.C:
 		return ErrConnectionWriteTimeout
 	}
-
-	select {
-	case err := <-ready.Err:
-		return err
-	case <-s.shutdownCh:
-		return ErrSessionShutdown
-	case <-timer.C:
-		return ErrConnectionWriteTimeout
+	if !noWait {
+		select {
+		case err := <-ready.Err:
+			return err
+		case <-s.shutdownCh:
+			return ErrSessionShutdown
+		case <-timer.C:
+			return ErrConnectionWriteTimeout
+		}
 	}
+	return nil
 }
 
-func (s *Session) writeFrameNowait(frame *Frame) error {
-	ready := sendReady{F: frame}
-	select {
-	case s.sendCh <- ready:
-		return nil
-	case <-s.shutdownCh:
-		return ErrSessionShutdown
-	}
+func (s *Session) writeFrame(frame Frame) error {
+	return s.doWriteFrame(frame, false)
+}
+
+func (s *Session) writeFrameNowait(frame Frame) error {
+	return s.doWriteFrame(frame, true)
 }
 
 func (s *Session) updateWindow(sid uint32, delta uint32) error {
-	frame := &Frame{Header: newFrameHeader(flagWindowUpdate, sid)}
-	frame.SetLength(delta)
-	return s.writeFrame(frame)
+	frame := newFrame(flagWindowUpdate, sid, delta, nil)
+	return s.writeFrameNowait(frame)
 }
 
 func (s *Session) incomingStream(id uint32) (*Stream, error) {
@@ -187,7 +185,10 @@ func (s *Session) recv() {
 	}
 }
 
-func (s *Session) ResetCryptoContext(method string, iv uint64) error {
+func (s *Session) resetCryptoContext(method string, iv uint64, wait bool) error {
+	if wait {
+		s.writeFrame(nil)
+	}
 	ctx, err := NewCryptoContext(method, s.config.CipherKey, iv)
 	if nil != err {
 		return err
@@ -197,7 +198,11 @@ func (s *Session) ResetCryptoContext(method string, iv uint64) error {
 	return nil
 }
 
-func (s *Session) recvFrame(reader io.Reader) (*Frame, error) {
+func (s *Session) ResetCryptoContext(method string, iv uint64) error {
+	return s.resetCryptoContext(method, iv, true)
+}
+
+func (s *Session) recvFrame(reader io.Reader) (Frame, error) {
 	lenbuf := make([]byte, 4)
 	_, err := io.ReadAtLeast(reader, lenbuf, len(lenbuf))
 	if nil != err {
@@ -206,7 +211,7 @@ func (s *Session) recvFrame(reader io.Reader) (*Frame, error) {
 	ctx := s.cryptoContext
 	length := binary.BigEndian.Uint32(lenbuf)
 	length = ctx.decodeLength(length)
-	//log.Printf("[Recv]Read len:%d %d", length, binary.BigEndian.Uint32(lenbuf))
+	//log.Printf("[Recv]Read len:%d %d %d", length, binary.BigEndian.Uint32(lenbuf), ctx.decryptCounter)
 	if length > maxDataPacketSize {
 		return nil, ErrToolargeDataFrame
 	}
@@ -219,13 +224,13 @@ func (s *Session) recvFrame(reader io.Reader) (*Frame, error) {
 	if nil != err {
 		return nil, err
 	}
-
-	frame := &Frame{}
-	frame.Header = FrameHeader(buf[0:HeaderLenV1])
-	frame.Body = buf[HeaderLenV1:]
-	//log.Printf("[Recv]Read frame %d %d %d %d %d", length, frame.Header.Flags(), frame.Header.StreamID(), len(frame.Body), ctx.decryptCounter)
+	frame := Frame(buf)
+	// frame := &Frame{}
+	// frame.Header = FrameHeader(buf[0:HeaderLenV1])
+	// frame.Body = buf[HeaderLenV1:]
+	//log.Printf("[Recv]Read frame %d %d %d %d %d", length, frame.Header().Flags(), frame.Header().StreamID(), len(frame.Body()), ctx.decryptCounter)
 	ctx.incDecryptCounter()
-	if frame.Header.Version() != FrameProtoVersion {
+	if frame.Header().Version() != FrameProtoVersion {
 		return nil, ErrInvalidVersion
 	}
 
@@ -235,7 +240,7 @@ func (s *Session) recvFrame(reader io.Reader) (*Frame, error) {
 func (s *Session) recvLoop() error {
 	for !s.shutdown {
 		// Read the frame
-		var frame *Frame
+		var frame Frame
 		var err error
 		if frame, err = s.recvFrame(s.connReader); err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "reset by peer") {
@@ -245,7 +250,7 @@ func (s *Session) recvLoop() error {
 		}
 		//log.Printf("####Recv %d", frame.Header.Flags())
 		// Switch on the type
-		switch frame.Header.Flags() {
+		switch frame.Header().Flags() {
 		case flagData:
 			err = s.handleData(frame)
 		case flagSYN:
@@ -255,7 +260,7 @@ func (s *Session) recvLoop() error {
 		case flagWindowUpdate:
 			err = s.handleWindowUpdate(frame)
 		case flagPing:
-			s.writeFrameNowait(&Frame{Header: newFrameHeader(flagPingACK, frame.Header.StreamID())})
+			s.writeFrameNowait(newFrame(flagPingACK, frame.Header().StreamID(), 0, nil))
 		case flagPingACK:
 			asyncNotify(s.pingCh)
 		default:
@@ -266,28 +271,27 @@ func (s *Session) recvLoop() error {
 	return ErrSessionShutdown
 }
 
-func (s *Session) handleWindowUpdate(frame *Frame) error {
-	stream := s.getStream(frame.Header.StreamID())
+func (s *Session) handleWindowUpdate(frame Frame) error {
+	stream := s.getStream(frame.Header().StreamID())
 	if nil != stream {
 		stream.incrSendWindow(frame)
 	} else {
-		s.closeRemoteStream(frame.Header.StreamID())
+		s.closeRemoteStream(frame.Header().StreamID())
 	}
 	return nil
 }
 
-func (s *Session) handleData(frame *Frame) error {
-	stream := s.getStream(frame.Header.StreamID())
+func (s *Session) handleData(frame Frame) error {
+	stream := s.getStream(frame.Header().StreamID())
 	if nil != stream {
-		return stream.offerData(frame.Body)
-	} else {
-		s.closeRemoteStream(frame.Header.StreamID())
+		return stream.offerData(frame.Body())
 	}
+	s.closeRemoteStream(frame.Header().StreamID())
 	return nil
 }
 
-func (s *Session) handleSYN(frame *Frame) error {
-	stream, err := s.incomingStream(frame.Header.StreamID())
+func (s *Session) handleSYN(frame Frame) error {
+	stream, err := s.incomingStream(frame.Header().StreamID())
 	if nil == err {
 		select {
 		case s.acceptCh <- stream:
@@ -302,8 +306,8 @@ func (s *Session) handleSYN(frame *Frame) error {
 	return nil
 }
 
-func (s *Session) handleFIN(frame *Frame) error {
-	stream := s.getStream(frame.Header.StreamID())
+func (s *Session) handleFIN(frame Frame) error {
+	stream := s.getStream(frame.Header().StreamID())
 	if nil != stream {
 		stream.forceClose(true)
 	}
@@ -328,13 +332,12 @@ func (s *Session) send() {
 		}
 		return frs, nil
 	}
-
 	for !s.shutdown {
 		frs, err := readFrames()
 		if nil == err {
 			var buffer bytes.Buffer
 			if len(frs) == 1 {
-				err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
+				err = writeFrame(s.connWriter, frs[0].F, s.cryptoContext)
 				if nil != err {
 					break
 				}
@@ -345,11 +348,10 @@ func (s *Session) send() {
 						break
 					}
 				}
-				if nil == err {
+				if nil == err && buffer.Len() > 0 {
 					_, err = io.Copy(s.connWriter, &buffer)
 				}
 			}
-
 		}
 		for _, frame := range frs {
 			if nil != frame.Err {
@@ -445,7 +447,7 @@ GET_ID:
 	s.streams.Store(id, stream)
 	atomic.AddInt32(&s.streamsCounter, 1)
 
-	err := s.writeFrameHeaderData(newFrameHeader(flagSYN, id), nil)
+	err := s.writeFrame(newFrame(flagSYN, id, 0, nil))
 	if nil != err {
 		return nil, err
 	}
@@ -464,14 +466,14 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		// inflight:   make(map[uint32]struct{}),
 		// synCh:      make(chan struct{}, config.AcceptBacklog),
 		acceptCh: make(chan *Stream, 64),
-		sendCh:   make(chan sendReady, 64),
+		sendCh:   make(chan sendReady, config.WriteQueueLimit),
 		// recvDoneCh: make(chan struct{}),
 		shutdownCh: make(chan struct{}),
 		pingCh:     make(chan struct{}),
 	}
 	//default cipher
 
-	err := s.ResetCryptoContext(s.config.CipherMethod, s.config.CipherInitialCounter)
+	err := s.resetCryptoContext(s.config.CipherMethod, s.config.CipherInitialCounter, false)
 	if nil != err {
 		panic(err)
 	}

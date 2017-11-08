@@ -7,6 +7,9 @@ type Config struct {
 	// AcceptBacklog is used to limit how many streams may be
 	// waiting an accept.
 	AcceptBacklog int
+	// WriteBacklog is used to limit how many write events may be
+	// waiting to execute.
+	WriteQueueLimit int
 
 	// EnableKeepalive is used to do a period keep alive
 	// messages using a ping.
@@ -38,6 +41,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		AcceptBacklog:          256,
+		WriteQueueLimit:        1024,
 		EnableKeepAlive:        true,
 		KeepAliveInterval:      30 * time.Second,
 		ConnectionWriteTimeout: 10 * time.Second,

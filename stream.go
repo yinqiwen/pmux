@@ -172,7 +172,7 @@ func (s *Stream) updateRemoteSendWindow() error {
 }
 
 // incrSendWindow updates the size of our send window
-func (s *Stream) incrSendWindow(frame *Frame) error {
+func (s *Stream) incrSendWindow(frame Frame) error {
 	// Increase window, unblock a sender
 	atomic.AddUint32(&s.sendWindow, frame.Length())
 	asyncNotify(s.sendNotifyCh)
@@ -227,7 +227,7 @@ START:
 
 	// Send the header
 	//s.sendHdr.encode(flagData, s.id, max)
-	if err := s.session.writeFrameHeaderData(newFrameHeader(flagData, s.id), b[:max]); err != nil {
+	if err := s.session.writeFrameNowait(newFrame(flagData, s.id, 0, b[:max])); err != nil {
 		return 0, err
 	}
 
@@ -249,7 +249,6 @@ WAIT:
 	case <-timeout:
 		return 0, ErrTimeout
 	}
-	return 0, nil
 }
 
 // notifyWaiting notifies all the waiting channels
