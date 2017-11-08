@@ -1,7 +1,7 @@
 package pmux
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/binary"
 	"io"
 	"log"
@@ -23,8 +23,8 @@ type Session struct {
 	nextStreamID uint32
 	config       *Config
 	conn         io.ReadWriteCloser
-	connReader   io.Reader
-	connWriter   io.Writer
+	connReader   *bufio.Reader
+	connWriter   *bufio.Writer
 	// bufRead is a buffered reader
 	//bufRead  *bufio.Reader
 	//streams    map[uint32]*Stream
@@ -335,22 +335,14 @@ func (s *Session) send() {
 	for !s.shutdown {
 		frs, err := readFrames()
 		if nil == err {
-			var buffer bytes.Buffer
-			if len(frs) == 1 {
-				err = writeFrame(s.connWriter, frs[0].F, s.cryptoContext)
+			for _, frame := range frs {
+				err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
 				if nil != err {
 					break
 				}
-			} else {
-				for _, frame := range frs {
-					err = writeFrame(&buffer, frame.F, s.cryptoContext)
-					if nil != err {
-						break
-					}
-				}
-				if nil == err && buffer.Len() > 0 {
-					_, err = io.Copy(s.connWriter, &buffer)
-				}
+			}
+			if nil == err {
+				s.connWriter.Flush()
 			}
 		}
 		for _, frame := range frs {
@@ -459,8 +451,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		config: config,
 		// logger:     log.New(config.LogOutput, "", log.LstdFlags),
 		conn:       conn,
-		connReader: conn,
-		connWriter: conn,
+		connReader: bufio.NewReader(conn),
+		connWriter: bufio.NewWriter(conn),
 		// pings:      make(map[uint32]chan struct{}),
 		//streams: make(map[uint32]*Stream),
 		// inflight:   make(map[uint32]struct{}),
