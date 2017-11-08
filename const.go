@@ -60,6 +60,6 @@ var (
 
 const (
 	// initialStreamWindow is the initial stream window size
-	initialStreamWindow uint32 = 256 * 1024
+	initialStreamWindow uint32 = 512 * 1024
 	maxDataPacketSize   uint32 = 1024 * 1024
 )
