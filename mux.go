@@ -5,6 +5,10 @@ import (
 	"io"
 )
 
+type IOCallback interface {
+	OnIO(read bool)
+}
+
 // VerifyConfig is used to verify the sanity of configuration
 func VerifyConfig(config *Config) error {
 	if config.AcceptBacklog <= 0 {
