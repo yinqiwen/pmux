@@ -42,6 +42,7 @@ type Session struct {
 	initCh       chan struct{}
 
 	handshakeDone bool
+	acceptable    bool
 
 	cryptoContext *CryptoContext
 	lastRecvTime  time.Time
@@ -298,6 +299,12 @@ func (s *Session) handleData(frame Frame) error {
 func (s *Session) handleSYN(frame Frame) error {
 	stream, err := s.incomingStream(frame.Header().StreamID())
 	if nil == err {
+		if !s.acceptable {
+			log.Printf("[WARN] pmux: close incoming stream since current session is not acceptable.")
+			stream.Close()
+			return nil
+		}
+		stream.state = streamAccepting
 		select {
 		case s.acceptCh <- stream:
 			return nil
@@ -404,11 +411,13 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	if s.shutdown {
 		return nil, ErrSessionShutdown
 	}
+	s.acceptable = true
 	select {
 	case stream := <-s.acceptCh:
 		if nil == stream {
 			return nil, ErrSessionShutdown
 		}
+		stream.state = streamEstablished
 		return stream, nil
 	case <-s.shutdownCh:
 		return nil, ErrSessionShutdown

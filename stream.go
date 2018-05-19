@@ -13,7 +13,7 @@ type streamState int
 const (
 	streamEstablished streamState = iota
 	streamClosed
-	//streamReset
+	streamAccepting
 )
 
 type Stream struct {
@@ -41,6 +41,7 @@ type Stream struct {
 	recvNotifyCh chan struct{}
 	sendNotifyCh chan struct{}
 
+	initTime      time.Time
 	readDeadline  time.Time
 	writeDeadline time.Time
 
@@ -59,6 +60,7 @@ func newStream(session *Session, id uint32) *Stream {
 		sendWindow:   initialStreamWindow,
 		recvNotifyCh: make(chan struct{}, 1),
 		sendNotifyCh: make(chan struct{}, 1),
+		initTime:     time.Now(),
 	}
 	return s
 }
