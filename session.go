@@ -46,6 +46,8 @@ type Session struct {
 
 	cryptoContext *CryptoContext
 	lastRecvTime  time.Time
+
+	lenbuf [4]byte
 }
 
 // keepalive is a long running goroutine that periodically does
@@ -208,13 +210,13 @@ func (s *Session) ResetCryptoContext(method string, iv uint64) error {
 }
 
 func (s *Session) recvFrame(reader io.Reader) (Frame, error) {
-	lenbuf := make([]byte, 4)
-	_, err := io.ReadAtLeast(reader, lenbuf, len(lenbuf))
+	//lenbuf := make([]byte, 4)
+	_, err := io.ReadAtLeast(reader, s.lenbuf[:], len(s.lenbuf))
 	if nil != err {
 		return nil, err
 	}
 	ctx := s.cryptoContext
-	length := binary.BigEndian.Uint32(lenbuf)
+	length := binary.BigEndian.Uint32(s.lenbuf[:])
 	length = ctx.decodeLength(length)
 	//log.Printf("[Recv]Read len:%d %d %d", length, binary.BigEndian.Uint32(lenbuf), ctx.decryptCounter)
 	if length > maxDataPacketSize {
@@ -229,6 +231,7 @@ func (s *Session) recvFrame(reader io.Reader) (Frame, error) {
 	if nil != err {
 		return nil, err
 	}
+
 	frame := Frame(buf)
 	// frame := &Frame{}
 	// frame.Header = FrameHeader(buf[0:HeaderLenV1])
@@ -379,7 +382,6 @@ func (s *Session) Close() error {
 	s.shutdownLock.Lock()
 	defer s.shutdownLock.Unlock()
 
-	//log.Printf("###Close sesion with %v", s.shutdown)
 	if s.shutdown {
 		return nil
 	}
