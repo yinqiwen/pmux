@@ -41,7 +41,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		AcceptBacklog:          256,
-		WriteQueueLimit:        1024,
+		WriteQueueLimit:        256,
 		EnableKeepAlive:        true,
 		KeepAliveInterval:      30 * time.Second,
 		ConnectionWriteTimeout: 10 * time.Second,

@@ -72,7 +72,8 @@ func newFrame(flags byte, streamID, length uint32, data []byte) Frame {
 			flen += 4
 		}
 	}
-	fr := make(Frame, flen)
+	//fr := make(Frame, flen)
+	fr := Frame(getBytesFromPool(flen))
 	fr.Header().encode(flags, streamID)
 	if nil != data {
 		copy(fr.Body(), data)

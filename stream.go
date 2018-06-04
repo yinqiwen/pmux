@@ -28,7 +28,7 @@ type Stream struct {
 	stateLock sync.Mutex
 
 	//recvBuf  *bytes.Buffer
-	recvBuf  ByteSliceBuffer
+	recvBuf  FrameDataBuffer
 	recvLock sync.Mutex
 
 	//controlErr     chan error
@@ -86,12 +86,13 @@ START:
 		s.recvLock.Lock()
 		b := s.recvBuf.Take()
 		s.recvLock.Unlock()
-		if len(b) > 0 {
+		if nil != b {
 			// Read any bytes
-			n := len(b)
+			n := len(b.data)
 			atomic.AddUint32(&s.deltaWindow, uint32(n))
 			s.updateRemoteSendWindow()
-			_, err := w.Write(b)
+			_, err := w.Write(b.data)
+			putBytesToPool(b.fr)
 			if s.IOCallback != nil {
 				s.IOCallback.OnIO(true)
 			}
@@ -189,9 +190,9 @@ func (s *Stream) incrSendWindow(frame Frame) error {
 	return nil
 }
 
-func (s *Stream) offerData(data []byte) error {
+func (s *Stream) offerData(fr Frame) error {
 	s.recvLock.Lock()
-	s.recvBuf.Write(data)
+	s.recvBuf.Write(fr)
 	s.recvLock.Unlock()
 	asyncNotify(s.recvNotifyCh)
 	//log.Printf("####%s %d stream", string(data), len(data))

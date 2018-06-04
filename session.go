@@ -104,9 +104,11 @@ func (s *Session) closeRemoteStream(id uint32) error {
 }
 
 func (s *Session) doWriteFrame(frame Frame, noWait bool) error {
-	// if frame.Header.Flags() != flagData {
-	// 	return s.writeFrameNowait(frame)
-	// }
+	if s.shutdown {
+		putBytesToPool(frame)
+		return ErrSessionShutdown
+	}
+
 	timer := time.NewTimer(30 * time.Second)
 	defer timer.Stop()
 
@@ -222,7 +224,8 @@ func (s *Session) recvFrame(reader io.Reader) (Frame, error) {
 	if length > maxDataPacketSize {
 		return nil, ErrToolargeDataFrame
 	}
-	buf := make([]byte, length)
+	//buf := make([]byte, length)
+	buf := getBytesFromPool(int(length))
 	_, err = io.ReadAtLeast(reader, buf, len(buf))
 	if nil != err {
 		return nil, err
@@ -264,14 +267,19 @@ func (s *Session) recvLoop() error {
 			err = s.handleData(frame)
 		case flagSYN:
 			err = s.handleSYN(frame)
+			putBytesToPool(frame)
 		case flagFIN:
 			err = s.handleFIN(frame)
+			putBytesToPool(frame)
 		case flagWindowUpdate:
 			err = s.handleWindowUpdate(frame)
+			putBytesToPool(frame)
 		case flagPing:
 			s.writeFrameNowait(newFrame(flagPingACK, frame.Header().StreamID(), 0, nil))
+			putBytesToPool(frame)
 		case flagPingACK:
 			asyncNotify(s.pingCh)
+			putBytesToPool(frame)
 		default:
 			return ErrInvalidMsgType
 
@@ -293,9 +301,11 @@ func (s *Session) handleWindowUpdate(frame Frame) error {
 func (s *Session) handleData(frame Frame) error {
 	stream := s.getStream(frame.Header().StreamID())
 	if nil != stream {
-		return stream.offerData(frame.Body())
+		return stream.offerData(frame)
+	} else {
+		s.closeRemoteStream(frame.Header().StreamID())
+		putBytesToPool(frame)
 	}
-	s.closeRemoteStream(frame.Header().StreamID())
 	return nil
 }
 
@@ -352,6 +362,7 @@ func (s *Session) send() {
 		if nil == err {
 			for _, frame := range frs {
 				err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
+				putBytesToPool(frame.F)
 				if nil != err {
 					break
 				}
@@ -404,6 +415,7 @@ func (s *Session) Close() error {
 		stream.forceClose(true)
 		return true
 	})
+	close(s.sendCh)
 	return nil
 }
 
@@ -470,7 +482,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		//streams: make(map[uint32]*Stream),
 		// inflight:   make(map[uint32]struct{}),
 		// synCh:      make(chan struct{}, config.AcceptBacklog),
-		acceptCh: make(chan *Stream, 64),
+		acceptCh: make(chan *Stream, 8),
 		sendCh:   make(chan sendReady, config.WriteQueueLimit),
 		// recvDoneCh: make(chan struct{}),
 		shutdownCh: make(chan struct{}),
