@@ -416,6 +416,7 @@ func (s *Session) Close() error {
 		return true
 	})
 	close(s.sendCh)
+	RecycleBufReaderToPool(s.connReader)
 	return nil
 }
 
@@ -476,7 +477,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		config: config,
 		// logger:     log.New(config.LogOutput, "", log.LstdFlags),
 		conn:       conn,
-		connReader: bufio.NewReader(conn),
+		connReader: NewBufReaderFromPool(conn),
 		connWriter: conn,
 		// pings:      make(map[uint32]chan struct{}),
 		//streams: make(map[uint32]*Stream),
