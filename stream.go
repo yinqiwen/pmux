@@ -217,6 +217,57 @@ func (s *Stream) Write(p []byte) (int, error) {
 	return total, nil
 }
 
+func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
+	bufSize := uint32(8192)
+	for {
+		s.stateLock.Lock()
+		if s.state != streamEstablished {
+			s.stateLock.Unlock()
+			return n, ErrStreamClosed
+		}
+		s.stateLock.Unlock()
+		// If there is no data available, block
+		window := atomic.LoadUint32(&s.sendWindow)
+		if window == 0 {
+			log.Printf("[%d]send window is ZERO", s.ID())
+			var timeout <-chan time.Time
+			if !s.writeDeadline.IsZero() {
+				delay := s.writeDeadline.Sub(time.Now())
+				timeout = time.After(delay)
+			}
+			select {
+			case <-s.sendNotifyCh:
+				continue
+			case <-timeout:
+				return n, ErrTimeout
+			}
+		}
+		// Send up to our send window
+		max := min(window, bufSize)
+		fr := LenFrame(getBytesFromPool(int(max) + HeaderLenV1 + 4))
+		fr.Frame().Header().encode(flagData, s.ID())
+		rn, rerr := r.Read(fr.Frame().Body())
+		n += int64(rn)
+		if rn > 0 {
+			fr = fr[0:(4 + HeaderLenV1 + rn)]
+			if err := s.session.writeFrameNowait(fr); err != nil {
+				putBytesToPool(fr)
+				return n, err
+			}
+			// Reduce our send window
+			atomic.AddUint32(&s.sendWindow, ^uint32(rn-1))
+			if rn >= int(bufSize) && bufSize < 128*1024 {
+				bufSize *= 2
+			}
+		} else {
+			putBytesToPool(fr)
+		}
+		if nil != rerr {
+			return n, err
+		}
+	}
+}
+
 // write is used to write to the stream, may return on
 // a short write.
 func (s *Stream) write(b []byte) (n int, err error) {
@@ -224,6 +275,7 @@ func (s *Stream) write(b []byte) (n int, err error) {
 START:
 	s.stateLock.Lock()
 	if s.state != streamEstablished {
+		s.stateLock.Unlock()
 		return 0, ErrStreamClosed
 	}
 	s.stateLock.Unlock()
