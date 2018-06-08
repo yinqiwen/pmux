@@ -16,7 +16,7 @@ import (
 // sendReady is used to either mark a stream as ready
 // or to directly send a header
 type sendReady struct {
-	F   Frame
+	F   LenFrame
 	Err chan error
 }
 
@@ -48,8 +48,7 @@ type Session struct {
 	cryptoContext *CryptoContext
 	lastRecvTime  time.Time
 
-	lenbuf      [4]byte
-	wlenBuffers []byte
+	lenbuf [4]byte
 }
 
 // keepalive is a long running goroutine that periodically does
@@ -75,7 +74,7 @@ func (s *Session) keepalive() {
 // Ping is used to measure the RTT response time
 func (s *Session) Ping() (time.Duration, error) {
 	// Send the ping request
-	err := s.writeFrameNowait(newFrame(flagPing, 0, 0, nil))
+	err := s.writeFrameNowait(newLenFrame(flagPing, 0, 0, nil))
 	if nil != err {
 		return 0, err
 	}
@@ -98,14 +97,14 @@ func (s *Session) Ping() (time.Duration, error) {
 }
 
 func (s *Session) closeRemoteStream(id uint32) error {
-	err := s.writeFrameNowait(newFrame(flagFIN, id, 0, nil))
+	err := s.writeFrameNowait(newLenFrame(flagFIN, id, 0, nil))
 	if nil != err {
 		log.Printf("[WARN] pmux: failed to close remote: %v", err)
 	}
 	return err
 }
 
-func (s *Session) doWriteFrame(frame Frame, noWait bool) error {
+func (s *Session) doWriteFrame(frame LenFrame, noWait bool) error {
 	if s.shutdown {
 		putBytesToPool(frame)
 		return ErrSessionShutdown
@@ -138,16 +137,16 @@ func (s *Session) doWriteFrame(frame Frame, noWait bool) error {
 	return nil
 }
 
-func (s *Session) writeFrame(frame Frame) error {
+func (s *Session) writeFrame(frame LenFrame) error {
 	return s.doWriteFrame(frame, false)
 }
 
-func (s *Session) writeFrameNowait(frame Frame) error {
+func (s *Session) writeFrameNowait(frame LenFrame) error {
 	return s.doWriteFrame(frame, true)
 }
 
 func (s *Session) updateWindow(sid uint32, delta uint32) error {
-	frame := newFrame(flagWindowUpdate, sid, delta, nil)
+	frame := newLenFrame(flagWindowUpdate, sid, delta, nil)
 	return s.writeFrameNowait(frame)
 }
 
@@ -277,7 +276,7 @@ func (s *Session) recvLoop() error {
 			err = s.handleWindowUpdate(frame)
 			putBytesToPool(frame)
 		case flagPing:
-			s.writeFrameNowait(newFrame(flagPingACK, frame.Header().StreamID(), 0, nil))
+			s.writeFrameNowait(newLenFrame(flagPingACK, frame.Header().StreamID(), 0, nil))
 			putBytesToPool(frame)
 		case flagPingACK:
 			asyncNotify(s.pingCh)
@@ -363,12 +362,8 @@ func (s *Session) send() {
 		frs, err := readFrames()
 		var wbuffers net.Buffers
 		if nil == err {
-			for i, frame := range frs {
-				if len(s.wlenBuffers) > i*4 {
-					encodeFrameToBuffers(wbuffers, s.wlenBuffers[i*4:(i+1)*4], frame.F, s.cryptoContext)
-				} else {
-					encodeFrameToBuffers(wbuffers, make([]byte, 4), frame.F, s.cryptoContext)
-				}
+			for _, frame := range frs {
+				encodeFrameToBuffers(wbuffers, frame.F, s.cryptoContext)
 				//err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
 				//putBytesToPool(frame.F)
 				if nil != err {
@@ -429,7 +424,6 @@ func (s *Session) Close() error {
 	})
 	close(s.sendCh)
 	RecycleBufReaderToPool(s.connReader)
-	putBytesToPool(s.wlenBuffers)
 	return nil
 }
 
@@ -478,7 +472,7 @@ GET_ID:
 	s.streams.Store(id, stream)
 	atomic.AddInt32(&s.streamsCounter, 1)
 
-	err := s.writeFrame(newFrame(flagSYN, id, 0, nil))
+	err := s.writeFrame(newLenFrame(flagSYN, id, 0, nil))
 	if nil != err {
 		return nil, err
 	}
@@ -499,9 +493,8 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		acceptCh: make(chan *Stream, 8),
 		sendCh:   make(chan sendReady, config.WriteQueueLimit),
 		// recvDoneCh: make(chan struct{}),
-		shutdownCh:  make(chan struct{}),
-		pingCh:      make(chan struct{}),
-		wlenBuffers: getBytesFromPool(256),
+		shutdownCh: make(chan struct{}),
+		pingCh:     make(chan struct{}),
 	}
 	//default cipher
 

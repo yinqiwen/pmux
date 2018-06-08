@@ -240,7 +240,7 @@ START:
 
 	// Send the header
 	//s.sendHdr.encode(flagData, s.id, max)
-	if err := s.session.writeFrameNowait(newFrame(flagData, s.id, 0, b[:max])); err != nil {
+	if err := s.session.writeFrameNowait(newLenFrame(flagData, s.id, 0, b[:max])); err != nil {
 		return 0, err
 	}
 

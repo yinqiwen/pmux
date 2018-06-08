@@ -3,7 +3,6 @@ package pmux
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 )
 
@@ -49,6 +48,15 @@ func (h FrameHeader) encode(flags byte, streamID uint32) {
 	binary.BigEndian.PutUint32(h[2:6], streamID)
 }
 
+type LenFrame []byte
+
+func (h LenFrame) Len() []byte {
+	return h[0:4]
+}
+func (h LenFrame) Frame() Frame {
+	return Frame(h[4:])
+}
+
 type Frame []byte
 
 func (h Frame) Header() FrameHeader {
@@ -64,7 +72,7 @@ func (f Frame) Length() uint32 {
 	return binary.BigEndian.Uint32(f.Body())
 }
 
-func newFrame(flags byte, streamID, length uint32, data []byte) Frame {
+func newLenFrame(flags byte, streamID, length uint32, data []byte) LenFrame {
 	flen := HeaderLenV1
 	if nil != data {
 		flen += len(data)
@@ -74,57 +82,36 @@ func newFrame(flags byte, streamID, length uint32, data []byte) Frame {
 		}
 	}
 	//fr := make(Frame, flen)
-	fr := Frame(getBytesFromPool(flen))
-	fr.Header().encode(flags, streamID)
+	fr := LenFrame(getBytesFromPool(flen + 4))
+	fr.Frame().Header().encode(flags, streamID)
 	if nil != data {
-		copy(fr.Body(), data)
+		copy(fr.Frame().Body(), data)
 	} else {
 		if length > 0 {
-			binary.BigEndian.PutUint32(fr.Body(), length)
+			binary.BigEndian.PutUint32(fr.Frame().Body(), length)
 		}
 	}
 	return fr
 }
 
-// type Frame struct {
-// 	Header  FrameHeader
-// 	Body    []byte
-// 	Content []byte
-// }
-
-// func (f *Frame) Length() uint32 {
-// 	if f.Header.Flags() == flagData {
-// 		return uint32(len(f.Body))
-// 	}
-// 	return binary.BigEndian.Uint32(f.Body)
-// }
-
-// func (f *Frame) SetLength(v uint32) {
-// 	if f.Header.Flags() != flagData {
-// 		f.Body = make([]byte, 4)
-// 		binary.BigEndian.PutUint32(f.Body, v)
-// 	}
-// }
-
-// func newFrame(flags byte, streamID uint32, data []byte) *Frame {
-// 	fr := &Frame
-// 	fr.Content = make([]byte, HeaderLenV1+len(data))
-// }
-
-func encodeFrameToBuffers(buffers net.Buffers, lenbuf []byte, frame Frame, ctx *CryptoContext) (net.Buffers, error) {
-	if len(frame) == 0 {
+func encodeFrameToBuffers(buffers net.Buffers, f LenFrame, ctx *CryptoContext) (net.Buffers, error) {
+	if len(f) == 0 {
 		return buffers, nil
 	}
-	buf := []byte(frame)
-	var err error
-	buf, err = ctx.encodeData(buf)
+	buf := []byte(f.Frame())
+	//var err error
+	nbuf, err := ctx.encodeData(buf)
 	if nil != err {
 		return buffers, err
 	}
 	length := ctx.encodeLength(uint32(len(buf)))
-	binary.BigEndian.PutUint32(lenbuf, length)
-	buffers = append(buffers, lenbuf)
-	buffers = append(buffers, buf)
+	binary.BigEndian.PutUint32(f.Len(), length)
+	if &nbuf == &buf {
+		buffers = append(buffers, f)
+	} else {
+		buffers = append(buffers, f.Len())
+		buffers = append(buffers, nbuf)
+	}
 	//log.Printf("[Send]Write len:%d %d", len(buf), length)
 	//log.Printf("[Send]Write frame %d %d %d %d %d", len(buf), frame.Header().Flags(), frame.Header().StreamID(), len(frame.Body()), ctx.encryptCounter)
 	//binary.Write(wr, binary.BigEndian, length)
@@ -133,21 +120,21 @@ func encodeFrameToBuffers(buffers net.Buffers, lenbuf []byte, frame Frame, ctx *
 	return buffers, nil
 }
 
-func writeFrame(wr io.Writer, frame Frame, ctx *CryptoContext) error {
-	if len(frame) == 0 {
-		return nil
-	}
-	buf := []byte(frame)
-	var err error
-	buf, err = ctx.encodeData(buf)
-	if nil != err {
-		return err
-	}
-	length := ctx.encodeLength(uint32(len(buf)))
-	//log.Printf("[Send]Write len:%d %d", len(buf), length)
-	//log.Printf("[Send]Write frame %d %d %d %d %d", len(buf), frame.Header().Flags(), frame.Header().StreamID(), len(frame.Body()), ctx.encryptCounter)
-	binary.Write(wr, binary.BigEndian, length)
-	_, err = wr.Write(buf)
-	ctx.incEncryptCounter()
-	return err
-}
+// func writeFrame(wr io.Writer, frame Frame, ctx *CryptoContext) error {
+// 	if len(frame) == 0 {
+// 		return nil
+// 	}
+// 	buf := []byte(frame)
+// 	var err error
+// 	buf, err = ctx.encodeData(buf)
+// 	if nil != err {
+// 		return err
+// 	}
+// 	length := ctx.encodeLength(uint32(len(buf)))
+// 	//log.Printf("[Send]Write len:%d %d", len(buf), length)
+// 	//log.Printf("[Send]Write frame %d %d %d %d %d", len(buf), frame.Header().Flags(), frame.Header().StreamID(), len(frame.Body()), ctx.encryptCounter)
+// 	binary.Write(wr, binary.BigEndian, length)
+// 	_, err = wr.Write(buf)
+// 	ctx.incEncryptCounter()
+// 	return err
+// }
