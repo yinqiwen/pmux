@@ -363,7 +363,7 @@ func (s *Session) send() {
 		var wbuffers net.Buffers
 		if nil == err {
 			for _, frame := range frs {
-				encodeFrameToBuffers(wbuffers, frame.F, s.cryptoContext)
+				wbuffers, err = encodeFrameToBuffers(wbuffers, frame.F, s.cryptoContext)
 				//err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
 				//putBytesToPool(frame.F)
 				if nil != err {

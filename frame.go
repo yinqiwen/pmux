@@ -104,10 +104,11 @@ func encodeFrameToBuffers(buffers net.Buffers, f LenFrame, ctx *CryptoContext) (
 	if nil != err {
 		return buffers, err
 	}
-	length := ctx.encodeLength(uint32(len(buf)))
+	length := ctx.encodeLength(uint32(len(nbuf)))
 	binary.BigEndian.PutUint32(f.Len(), length)
-	if &nbuf == &buf {
-		buffers = append(buffers, f)
+	//buffers = append(buffers, f[0:(4+len(nbuf))])
+	if &buf[0:cap(buf)][cap(buf)-1] == &nbuf[0:cap(nbuf)][cap(nbuf)-1] {
+		buffers = append(buffers, f[0:(4+len(nbuf))])
 	} else {
 		buffers = append(buffers, f.Len())
 		buffers = append(buffers, nbuf)
