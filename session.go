@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,7 +48,8 @@ type Session struct {
 	cryptoContext *CryptoContext
 	lastRecvTime  time.Time
 
-	lenbuf [4]byte
+	lenbuf      [4]byte
+	wlenBuffers []byte
 }
 
 // keepalive is a long running goroutine that periodically does
@@ -359,16 +361,26 @@ func (s *Session) send() {
 	}
 	for !s.shutdown {
 		frs, err := readFrames()
+		var wbuffers net.Buffers
 		if nil == err {
-			for _, frame := range frs {
-				err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
-				putBytesToPool(frame.F)
+			for i, frame := range frs {
+				if len(s.wlenBuffers) > i*4 {
+					encodeFrameToBuffers(wbuffers, s.wlenBuffers[i*4:(i+1)*4], frame.F, s.cryptoContext)
+				} else {
+					encodeFrameToBuffers(wbuffers, make([]byte, 4), frame.F, s.cryptoContext)
+				}
+				//err = writeFrame(s.connWriter, frame.F, s.cryptoContext)
+				//putBytesToPool(frame.F)
 				if nil != err {
 					break
 				}
 			}
 		}
+		if len(wbuffers) > 0 {
+			_, err = wbuffers.WriteTo(s.connWriter)
+		}
 		for _, frame := range frs {
+			putBytesToPool(frame.F)
 			if nil != frame.Err {
 				asyncSendErr(frame.Err, err)
 			}
@@ -417,6 +429,7 @@ func (s *Session) Close() error {
 	})
 	close(s.sendCh)
 	RecycleBufReaderToPool(s.connReader)
+	putBytesToPool(s.wlenBuffers)
 	return nil
 }
 
@@ -486,8 +499,9 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		acceptCh: make(chan *Stream, 8),
 		sendCh:   make(chan sendReady, config.WriteQueueLimit),
 		// recvDoneCh: make(chan struct{}),
-		shutdownCh: make(chan struct{}),
-		pingCh:     make(chan struct{}),
+		shutdownCh:  make(chan struct{}),
+		pingCh:      make(chan struct{}),
+		wlenBuffers: getBytesFromPool(256),
 	}
 	//default cipher
 

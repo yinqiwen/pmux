@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 )
 
 const (
@@ -109,6 +110,28 @@ func newFrame(flags byte, streamID, length uint32, data []byte) Frame {
 // 	fr := &Frame
 // 	fr.Content = make([]byte, HeaderLenV1+len(data))
 // }
+
+func encodeFrameToBuffers(buffers net.Buffers, lenbuf []byte, frame Frame, ctx *CryptoContext) (net.Buffers, error) {
+	if len(frame) == 0 {
+		return buffers, nil
+	}
+	buf := []byte(frame)
+	var err error
+	buf, err = ctx.encodeData(buf)
+	if nil != err {
+		return buffers, err
+	}
+	length := ctx.encodeLength(uint32(len(buf)))
+	binary.BigEndian.PutUint32(lenbuf, length)
+	buffers = append(buffers, lenbuf)
+	buffers = append(buffers, buf)
+	//log.Printf("[Send]Write len:%d %d", len(buf), length)
+	//log.Printf("[Send]Write frame %d %d %d %d %d", len(buf), frame.Header().Flags(), frame.Header().StreamID(), len(frame.Body()), ctx.encryptCounter)
+	//binary.Write(wr, binary.BigEndian, length)
+	//_, err = wr.Write(buf)
+	ctx.incEncryptCounter()
+	return buffers, nil
+}
 
 func writeFrame(wr io.Writer, frame Frame, ctx *CryptoContext) error {
 	if len(frame) == 0 {
