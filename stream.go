@@ -219,6 +219,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 
 func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 	bufSize := uint32(8192)
+	var timeout <-chan time.Time
 	for {
 		s.stateLock.Lock()
 		if s.state != streamEstablished {
@@ -250,7 +251,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 		n += int64(rn)
 		if rn > 0 {
 			fr = fr[0:(4 + HeaderLenV1 + rn)]
-			if err := s.session.writeFrameNowait(fr); err != nil {
+			if err := s.session.writeFrameNowait(fr, timeout); err != nil {
 				putBytesToPool(fr)
 				return n, err
 			}
@@ -272,6 +273,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 // a short write.
 func (s *Stream) write(b []byte) (n int, err error) {
 	var max uint32
+	var timeout <-chan time.Time
 START:
 	s.stateLock.Lock()
 	if s.state != streamEstablished {
@@ -279,6 +281,10 @@ START:
 		return 0, ErrStreamClosed
 	}
 	s.stateLock.Unlock()
+	if !s.writeDeadline.IsZero() {
+		delay := s.writeDeadline.Sub(time.Now())
+		timeout = time.After(delay)
+	}
 
 	// If there is no data available, block
 	window := atomic.LoadUint32(&s.sendWindow)
@@ -292,7 +298,7 @@ START:
 
 	// Send the header
 	//s.sendHdr.encode(flagData, s.id, max)
-	if err := s.session.writeFrameNowait(newLenFrame(flagData, s.id, 0, b[:max])); err != nil {
+	if err := s.session.writeFrameNowait(newLenFrame(flagData, s.id, 0, b[:max]), timeout); err != nil {
 		return 0, err
 	}
 
@@ -303,11 +309,6 @@ START:
 	return int(max), err
 
 WAIT:
-	var timeout <-chan time.Time
-	if !s.writeDeadline.IsZero() {
-		delay := s.writeDeadline.Sub(time.Now())
-		timeout = time.After(delay)
-	}
 	select {
 	case <-s.sendNotifyCh:
 		goto START
