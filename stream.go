@@ -262,6 +262,9 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 				putBytesToPool(fr)
 				return n, err
 			}
+			if s.IOCallback != nil {
+				s.IOCallback.OnIO(false)
+			}
 			// Reduce our send window
 			atomic.AddUint32(&s.sendWindow, ^uint32(rn-1))
 			if rn >= int(bufSize) && bufSize < 128*1024 {
