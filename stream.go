@@ -218,7 +218,8 @@ func (s *Stream) Write(p []byte) (int, error) {
 }
 
 func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
-	bufSize := uint32(8192)
+	bufUnitSize := 4096
+	bufSize := uint32(bufUnitSize * 2)
 	var timeout <-chan time.Time
 	for {
 		s.stateLock.Lock()
@@ -245,7 +246,13 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 		}
 		// Send up to our send window
 		max := min(window, bufSize)
-		fr := LenFrame(getBytesFromPool(int(max) + HeaderLenV1 + 4))
+		frameLen := int(max) + HeaderLenV1 + 4
+		kunit := frameLen / bufUnitSize
+		if frameLen%bufUnitSize > 0 {
+			kunit++
+		}
+		requestDataLen := kunit * bufUnitSize
+		fr := LenFrame(getBytesFromPool(requestDataLen)[0:frameLen])
 		fr.Frame().Header().encode(flagData, s.ID())
 		rn, rerr := r.Read(fr.Frame().Body())
 		n += int64(rn)
@@ -259,6 +266,8 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 			atomic.AddUint32(&s.sendWindow, ^uint32(rn-1))
 			if rn >= int(bufSize) && bufSize < 128*1024 {
 				bufSize *= 2
+			} else if rn < int(bufSize/2) {
+				bufSize /= 2
 			}
 		} else {
 			putBytesToPool(fr)
