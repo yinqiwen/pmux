@@ -97,9 +97,14 @@ func (s *Session) Ping() (time.Duration, error) {
 	return time.Now().Sub(start), nil
 }
 
-func (s *Session) closeRemoteStream(id uint32) error {
+func (s *Session) closeRemoteStream(id uint32, sync bool) error {
 	var timeout <-chan time.Time
-	err := s.writeFrameNowait(newLenFrame(flagFIN, id, 0, nil), timeout)
+	var err error
+	if sync {
+		err = s.writeFrame(newLenFrame(flagFIN, id, 0, nil), timeout)
+	} else {
+		err = s.writeFrameNowait(newLenFrame(flagFIN, id, 0, nil), timeout)
+	}
 	if nil != err {
 		log.Printf("[WARN] pmux: failed to close remote: %v", err)
 	}
@@ -160,7 +165,7 @@ func (s *Session) incomingStream(id uint32) (*Stream, error) {
 	ss := newStream(s, id)
 	if _, loaded := s.streams.LoadOrStore(id, ss); loaded {
 		log.Printf("[ERR]: duplicate stream declared")
-		s.closeRemoteStream(id)
+		s.closeRemoteStream(id, false)
 		return nil, ErrDuplicateStream
 	}
 	atomic.AddInt32(&s.streamsCounter, 1)
@@ -302,7 +307,7 @@ func (s *Session) handleWindowUpdate(frame Frame) error {
 	if nil != stream {
 		stream.incrSendWindow(frame)
 	} else {
-		s.closeRemoteStream(frame.Header().StreamID())
+		s.closeRemoteStream(frame.Header().StreamID(), false)
 	}
 	return nil
 }
@@ -312,7 +317,7 @@ func (s *Session) handleData(frame Frame) error {
 	if nil != stream {
 		return stream.offerData(frame)
 	} else {
-		s.closeRemoteStream(frame.Header().StreamID())
+		s.closeRemoteStream(frame.Header().StreamID(), false)
 		putBytesToPool(frame)
 	}
 	return nil

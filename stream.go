@@ -341,18 +341,24 @@ func (s *Stream) Close() error {
 	if s.state != streamEstablished {
 		return nil
 	}
-	//log.Printf("[%d]initial close stream", s.ID())
-	s.sendClose()
+	s.sendClose(false)
+	s.forceClose(true)
+	return nil
+}
+
+// Sync Close  stream
+func (s *Stream) SyncClose() error {
+	if s.state != streamEstablished {
+		return nil
+	}
+	s.sendClose(true)
 	s.forceClose(true)
 	return nil
 }
 
 // sendClose is used to send a FIN
-func (s *Stream) sendClose() error {
-	if err := s.session.closeRemoteStream(s.id); err != nil {
-		return err
-	}
-	return nil
+func (s *Stream) sendClose(sync bool) error {
+	return s.session.closeRemoteStream(s.id, sync)
 }
 
 // forceClose is used for when the session is exiting
