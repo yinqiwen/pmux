@@ -58,8 +58,8 @@ func newStream(session *Session, id uint32) *Stream {
 		sendErr: make(chan error, 1),
 		//recvWindow:   initialStreamWindow,
 		sendWindow:   initialStreamWindow,
-		recvNotifyCh: make(chan struct{}, 1),
-		sendNotifyCh: make(chan struct{}, 1),
+		recvNotifyCh: make(chan struct{}, 3),
+		sendNotifyCh: make(chan struct{}, 3),
 		initTime:     time.Now(),
 	}
 	return s
@@ -225,6 +225,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 		s.stateLock.Lock()
 		if s.state != streamEstablished {
 			s.stateLock.Unlock()
+			//log.Printf("[%d]close stream at state:%d", s.ID(), s.state)
 			return n, ErrStreamClosed
 		}
 		s.stateLock.Unlock()
@@ -276,7 +277,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 			putBytesToPool(fr)
 		}
 		if nil != rerr {
-			return n, err
+			return n, rerr
 		}
 	}
 }
@@ -340,6 +341,7 @@ func (s *Stream) Close() error {
 	if s.state != streamEstablished {
 		return nil
 	}
+	//log.Printf("[%d]initial close stream", s.ID())
 	s.sendClose()
 	s.forceClose(true)
 	return nil

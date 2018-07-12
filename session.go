@@ -343,6 +343,7 @@ func (s *Session) handleSYN(frame Frame) error {
 func (s *Session) handleFIN(frame Frame) error {
 	stream := s.getStream(frame.Header().StreamID())
 	if nil != stream {
+		//log.Printf("[%d]passive close stream", stream.ID())
 		stream.forceClose(true)
 	}
 	return nil
@@ -434,7 +435,7 @@ func (s *Session) Close() error {
 		frame := <-s.sendCh
 		putBytesToPool(frame.F)
 	}
-	close(s.sendCh)
+	//close(s.sendCh)
 	RecycleBufReaderToPool(s.connReader)
 	return nil
 }
