@@ -3,6 +3,7 @@ package pmux
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -75,7 +76,7 @@ func (s *Session) keepalive() {
 func (s *Session) Ping() (time.Duration, error) {
 	// Send the ping request
 	pingTimeout := time.After(s.config.PingTimeout)
-	err := s.writeFrameNowait(newLenFrame(flagPing, 0, 0, nil), pingTimeout)
+	err := s.writeFrameNowait(newLenFrame(flagPing, 0, 0, nil), pingTimeout, nil)
 	if nil != err {
 		return 0, err
 	}
@@ -101,9 +102,9 @@ func (s *Session) closeRemoteStream(id uint32, sync bool) error {
 	var timeout <-chan time.Time
 	var err error
 	if sync {
-		err = s.writeFrame(newLenFrame(flagFIN, id, 0, nil), timeout)
+		err = s.writeFrame(newLenFrame(flagFIN, id, 0, nil), timeout, nil)
 	} else {
-		err = s.writeFrameNowait(newLenFrame(flagFIN, id, 0, nil), timeout)
+		err = s.writeFrameNowait(newLenFrame(flagFIN, id, 0, nil), timeout, nil)
 	}
 	if nil != err {
 		log.Printf("[WARN] pmux: failed to close remote: %v", err)
@@ -111,7 +112,7 @@ func (s *Session) closeRemoteStream(id uint32, sync bool) error {
 	return err
 }
 
-func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.Time) error {
+func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.Time, abort <-chan struct{}) error {
 	if s.shutdown {
 		putBytesToPool(frame)
 		return ErrSessionShutdown
@@ -132,6 +133,9 @@ func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.
 	case <-timeout:
 		putBytesToPool(frame)
 		return ErrConnectionWriteTimeout
+	case <-abort:
+		putBytesToPool(frame)
+		return ErrStreamAbort
 	}
 	if !noWait {
 		select {
@@ -146,18 +150,18 @@ func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.
 	return nil
 }
 
-func (s *Session) writeFrame(frame LenFrame, timeout <-chan time.Time) error {
-	return s.doWriteFrame(frame, false, timeout)
+func (s *Session) writeFrame(frame LenFrame, timeout <-chan time.Time, abort <-chan struct{}) error {
+	return s.doWriteFrame(frame, false, timeout, abort)
 }
 
-func (s *Session) writeFrameNowait(frame LenFrame, timeout <-chan time.Time) error {
-	return s.doWriteFrame(frame, true, timeout)
+func (s *Session) writeFrameNowait(frame LenFrame, timeout <-chan time.Time, abort <-chan struct{}) error {
+	return s.doWriteFrame(frame, true, timeout, abort)
 }
 
 func (s *Session) updateWindow(sid uint32, delta uint32) error {
 	var timeout <-chan time.Time
 	frame := newLenFrame(flagWindowUpdate, sid, delta, nil)
-	return s.writeFrameNowait(frame, timeout)
+	return s.writeFrameNowait(frame, timeout, nil)
 }
 
 func (s *Session) incomingStream(id uint32) (*Stream, error) {
@@ -208,7 +212,7 @@ func (s *Session) recv() {
 func (s *Session) resetCryptoContext(method string, iv uint64, wait bool) error {
 	if wait {
 		var timeout <-chan time.Time
-		s.writeFrame(nil, timeout)
+		s.writeFrame(nil, timeout, nil)
 	}
 	ctx, err := NewCryptoContext(method, s.config.CipherKey, iv)
 	if nil != err {
@@ -254,7 +258,7 @@ func (s *Session) recvFrame(reader io.Reader) (Frame, error) {
 	//log.Printf("[Recv]Read frame %d %d %d %d %d", length, frame.Header().Flags(), frame.Header().StreamID(), len(frame.Body()), ctx.decryptCounter)
 	ctx.incDecryptCounter()
 	if frame.Header().Version() != FrameProtoVersion {
-		return nil, ErrInvalidVersion
+		return nil, fmt.Errorf("Invalid proto version:%d with data len:%d, flag:%d", frame.Header().Version(), length, frame.Header().Flags())
 	}
 
 	return frame, nil
@@ -288,7 +292,7 @@ func (s *Session) recvLoop() error {
 			putBytesToPool(frame)
 		case flagPing:
 			var timeout <-chan time.Time
-			s.writeFrameNowait(newLenFrame(flagPingACK, frame.Header().StreamID(), 0, nil), timeout)
+			s.writeFrameNowait(newLenFrame(flagPingACK, frame.Header().StreamID(), 0, nil), timeout, nil)
 			putBytesToPool(frame)
 		case flagPingACK:
 			asyncNotify(s.pingCh)
@@ -440,8 +444,8 @@ func (s *Session) Close() error {
 		frame := <-s.sendCh
 		putBytesToPool(frame.F)
 	}
-	//close(s.sendCh)
 	RecycleBufReaderToPool(s.connReader)
+	close(s.sendCh)
 	return nil
 }
 
@@ -490,7 +494,7 @@ GET_ID:
 	s.streams.Store(id, stream)
 	atomic.AddInt32(&s.streamsCounter, 1)
 	var timeout <-chan time.Time
-	err := s.writeFrame(newLenFrame(flagSYN, id, 0, nil), timeout)
+	err := s.writeFrame(newLenFrame(flagSYN, id, 0, nil), timeout, nil)
 	if nil != err {
 		return nil, err
 	}

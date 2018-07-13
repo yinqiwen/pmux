@@ -34,6 +34,9 @@ var (
 	// ErrStreamClosed is returned when using a closed stream
 	ErrStreamClosed = fmt.Errorf("stream closed")
 
+	// ErrStreamClosed is returned when using a closed stream
+	ErrStreamAbort = fmt.Errorf("stream abort")
+
 	// ErrUnexpectedFlag is set when we get an unexpected flag
 	ErrUnexpectedFlag = fmt.Errorf("unexpected flag")
 

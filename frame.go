@@ -114,6 +114,7 @@ func encodeFrameToBuffers(buffers net.Buffers, f LenFrame, ctx *CryptoContext) (
 		buffers = append(buffers, nbuf)
 	}
 	//log.Printf("[Send]Write len:%d %d", len(buf), length)
+	//frame := f.Frame()
 	//log.Printf("[Send]Write frame %d %d %d %d %d", len(buf), frame.Header().Flags(), frame.Header().StreamID(), len(frame.Body()), ctx.encryptCounter)
 	//binary.Write(wr, binary.BigEndian, length)
 	//_, err = wr.Write(buf)
