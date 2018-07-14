@@ -37,7 +37,7 @@ type Session struct {
 	sendCh         chan sendReady
 	pingCh         chan struct{}
 
-	shutdown     bool
+	shutdown     int32
 	shutdownErr  error
 	shutdownCh   chan struct{}
 	shutdownLock sync.Mutex
@@ -48,14 +48,19 @@ type Session struct {
 
 	cryptoContext *CryptoContext
 	lastRecvTime  time.Time
+	sendingNum    int32
 
 	lenbuf [4]byte
+}
+
+func (s *Session) IsShutdown() bool {
+	return atomic.LoadInt32(&s.shutdown) > 0
 }
 
 // keepalive is a long running goroutine that periodically does
 // a ping to keep the connection alive.
 func (s *Session) keepalive() {
-	for !s.shutdown {
+	for !s.IsShutdown() {
 		select {
 		case <-time.After(s.config.KeepAliveInterval):
 			_, err := s.Ping()
@@ -76,7 +81,7 @@ func (s *Session) keepalive() {
 func (s *Session) Ping() (time.Duration, error) {
 	// Send the ping request
 	pingTimeout := time.After(s.config.PingTimeout)
-	err := s.writeFrameNowait(newLenFrame(flagPing, 0, 0, nil), pingTimeout, nil)
+	err := s.writeFrameNowait(newLenFrame(flagPing, 0, 0, nil), pingTimeout)
 	if nil != err {
 		return 0, err
 	}
@@ -102,9 +107,9 @@ func (s *Session) closeRemoteStream(id uint32, sync bool) error {
 	var timeout <-chan time.Time
 	var err error
 	if sync {
-		err = s.writeFrame(newLenFrame(flagFIN, id, 0, nil), timeout, nil)
+		err = s.writeFrame(newLenFrame(flagFIN, id, 0, nil), timeout)
 	} else {
-		err = s.writeFrameNowait(newLenFrame(flagFIN, id, 0, nil), timeout, nil)
+		err = s.writeFrameNowait(newLenFrame(flagFIN, id, 0, nil), timeout)
 	}
 	if nil != err {
 		log.Printf("[WARN] pmux: failed to close remote: %v", err)
@@ -112,19 +117,19 @@ func (s *Session) closeRemoteStream(id uint32, sync bool) error {
 	return err
 }
 
-func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.Time, abort <-chan struct{}) error {
-	if s.shutdown {
+func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.Time) error {
+	atomic.AddInt32(&s.sendingNum, 1)
+	if s.IsShutdown() {
+		atomic.AddInt32(&s.sendingNum, -1)
 		putBytesToPool(frame)
 		return ErrSessionShutdown
 	}
-
-	//timer := time.NewTimer(30 * time.Second)
-	//defer timer.Stop()
-
+	defer atomic.AddInt32(&s.sendingNum, -1)
 	ready := sendReady{F: frame, Err: nil}
 	if !noWait {
 		ready.Err = make(chan error, 1)
 	}
+
 	select {
 	case s.sendCh <- ready:
 	case <-s.shutdownCh:
@@ -133,9 +138,6 @@ func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.
 	case <-timeout:
 		putBytesToPool(frame)
 		return ErrConnectionWriteTimeout
-	case <-abort:
-		putBytesToPool(frame)
-		return ErrStreamAbort
 	}
 	if !noWait {
 		select {
@@ -150,18 +152,18 @@ func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.
 	return nil
 }
 
-func (s *Session) writeFrame(frame LenFrame, timeout <-chan time.Time, abort <-chan struct{}) error {
-	return s.doWriteFrame(frame, false, timeout, abort)
+func (s *Session) writeFrame(frame LenFrame, timeout <-chan time.Time) error {
+	return s.doWriteFrame(frame, false, timeout)
 }
 
-func (s *Session) writeFrameNowait(frame LenFrame, timeout <-chan time.Time, abort <-chan struct{}) error {
-	return s.doWriteFrame(frame, true, timeout, abort)
+func (s *Session) writeFrameNowait(frame LenFrame, timeout <-chan time.Time) error {
+	return s.doWriteFrame(frame, true, timeout)
 }
 
 func (s *Session) updateWindow(sid uint32, delta uint32) error {
 	var timeout <-chan time.Time
 	frame := newLenFrame(flagWindowUpdate, sid, delta, nil)
-	return s.writeFrameNowait(frame, timeout, nil)
+	return s.writeFrameNowait(frame, timeout)
 }
 
 func (s *Session) incomingStream(id uint32) (*Stream, error) {
@@ -212,7 +214,7 @@ func (s *Session) recv() {
 func (s *Session) resetCryptoContext(method string, iv uint64, wait bool) error {
 	if wait {
 		var timeout <-chan time.Time
-		s.writeFrame(nil, timeout, nil)
+		s.writeFrame(nil, timeout)
 	}
 	ctx, err := NewCryptoContext(method, s.config.CipherKey, iv)
 	if nil != err {
@@ -265,7 +267,7 @@ func (s *Session) recvFrame(reader io.Reader) (Frame, error) {
 }
 
 func (s *Session) recvLoop() error {
-	for !s.shutdown {
+	for !s.IsShutdown() {
 		// Read the frame
 		var frame Frame
 		var err error
@@ -292,7 +294,7 @@ func (s *Session) recvLoop() error {
 			putBytesToPool(frame)
 		case flagPing:
 			var timeout <-chan time.Time
-			s.writeFrameNowait(newLenFrame(flagPingACK, frame.Header().StreamID(), 0, nil), timeout, nil)
+			s.writeFrameNowait(newLenFrame(flagPingACK, frame.Header().StreamID(), 0, nil), timeout)
 			putBytesToPool(frame)
 		case flagPingACK:
 			asyncNotify(s.pingCh)
@@ -376,7 +378,7 @@ func (s *Session) send() {
 		}
 		return frs, nil
 	}
-	for !s.shutdown {
+	for !s.IsShutdown() {
 		frs, err := readFrames()
 		var wbuffers net.Buffers
 		if nil == err {
@@ -418,10 +420,10 @@ func (s *Session) Close() error {
 	s.shutdownLock.Lock()
 	defer s.shutdownLock.Unlock()
 
-	if s.shutdown {
+	if s.IsShutdown() {
 		return nil
 	}
-	s.shutdown = true
+	atomic.StoreInt32(&s.shutdown, 1)
 	if s.shutdownErr == nil {
 		s.shutdownErr = ErrSessionShutdown
 	}
@@ -445,6 +447,9 @@ func (s *Session) Close() error {
 		putBytesToPool(frame.F)
 	}
 	RecycleBufReaderToPool(s.connReader)
+	for atomic.LoadInt32(&s.sendingNum) > 0 {
+		time.Sleep(10 * time.Nanosecond)
+	}
 	close(s.sendCh)
 	return nil
 }
@@ -452,7 +457,7 @@ func (s *Session) Close() error {
 // AcceptStream is used to block until the next available stream
 // is ready to be accepted.
 func (s *Session) AcceptStream() (*Stream, error) {
-	if s.shutdown {
+	if s.IsShutdown() {
 		return nil, ErrSessionShutdown
 	}
 	s.acceptable = true
@@ -470,7 +475,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 
 // IsClosed does a safe check to see if we have shutdown
 func (s *Session) IsClosed() bool {
-	return s.shutdown
+	return s.IsShutdown()
 }
 
 // OpenStream is used to create a new stream
@@ -494,7 +499,7 @@ GET_ID:
 	s.streams.Store(id, stream)
 	atomic.AddInt32(&s.streamsCounter, 1)
 	var timeout <-chan time.Time
-	err := s.writeFrame(newLenFrame(flagSYN, id, 0, nil), timeout, nil)
+	err := s.writeFrame(newLenFrame(flagSYN, id, 0, nil), timeout)
 	if nil != err {
 		return nil, err
 	}

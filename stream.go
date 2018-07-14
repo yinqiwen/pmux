@@ -38,9 +38,8 @@ type Stream struct {
 	sendLock  sync.Mutex
 	sendReady chan struct{}
 
-	recvNotifyCh  chan struct{}
-	sendNotifyCh  chan struct{}
-	abortNotifyCh chan struct{}
+	recvNotifyCh chan struct{}
+	sendNotifyCh chan struct{}
 
 	initTime      time.Time
 	readDeadline  time.Time
@@ -58,11 +57,10 @@ func newStream(session *Session, id uint32) *Stream {
 		state:   streamEstablished,
 		sendErr: make(chan error, 1),
 		//recvWindow:   initialStreamWindow,
-		sendWindow:    initialStreamWindow,
-		recvNotifyCh:  make(chan struct{}, 3),
-		sendNotifyCh:  make(chan struct{}, 3),
-		abortNotifyCh: make(chan struct{}),
-		initTime:      time.Now(),
+		sendWindow:   initialStreamWindow,
+		recvNotifyCh: make(chan struct{}, 3),
+		sendNotifyCh: make(chan struct{}, 3),
+		initTime:     time.Now(),
 	}
 	return s
 }
@@ -261,7 +259,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 		n += int64(rn)
 		if rn > 0 {
 			fr = fr[0:(4 + HeaderLenV1 + rn)]
-			if err := s.session.writeFrameNowait(fr, timeout, s.abortNotifyCh); err != nil {
+			if err := s.session.writeFrameNowait(fr, timeout); err != nil {
 				//putBytesToPool(fr)
 				return n, err
 			}
@@ -313,7 +311,7 @@ START:
 
 	// Send the header
 	//s.sendHdr.encode(flagData, s.id, max)
-	if err := s.session.writeFrameNowait(newLenFrame(flagData, s.id, 0, b[:max]), timeout, s.abortNotifyCh); err != nil {
+	if err := s.session.writeFrameNowait(newLenFrame(flagData, s.id, 0, b[:max]), timeout); err != nil {
 		return 0, err
 	}
 
@@ -336,7 +334,6 @@ WAIT:
 func (s *Stream) notifyWaiting() {
 	asyncNotify(s.recvNotifyCh)
 	asyncNotify(s.sendNotifyCh)
-	asyncNotify(s.abortNotifyCh)
 }
 
 // Close is used to close the stream
