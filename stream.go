@@ -92,7 +92,7 @@ START:
 			atomic.AddUint32(&s.deltaWindow, uint32(n))
 			s.updateRemoteSendWindow()
 			_, err := w.Write(b.data)
-			putBytesToPool(b.fr)
+			//putBytesToPool(b.fr)
 			if s.IOCallback != nil {
 				s.IOCallback.OnIO(true)
 			}
@@ -248,12 +248,13 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 		// Send up to our send window
 		max := min(window, bufSize)
 		frameLen := int(max) + HeaderLenV1 + 4
-		kunit := frameLen / bufUnitSize
-		if frameLen%bufUnitSize > 0 {
-			kunit++
-		}
-		requestDataLen := kunit * bufUnitSize
-		fr := LenFrame(getBytesFromPool(requestDataLen)[0:frameLen])
+		//kunit := frameLen / bufUnitSize
+		//if frameLen%bufUnitSize > 0 {
+		//	kunit++
+		//}
+		//requestDataLen := kunit * bufUnitSize
+		//fr := LenFrame(getBytesFromPool(requestDataLen)[0:frameLen])
+		fr := make(LenFrame, frameLen)
 		fr.Frame().Header().encode(flagData, s.ID())
 		rn, rerr := r.Read(fr.Frame().Body())
 		n += int64(rn)
@@ -273,8 +274,6 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 			} else if rn < int(bufSize/2) {
 				bufSize /= 2
 			}
-		} else {
-			putBytesToPool(fr)
 		}
 		if nil != rerr {
 			return n, rerr

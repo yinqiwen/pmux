@@ -40,7 +40,7 @@ func (buf *FrameDataBuffer) Read(p []byte) (int, error) {
 		b[0].data = b[0].data[min:]
 		total += min
 		if len(b[0].data) == 0 {
-			putBytesToPool(b[0].fr)
+			//putBytesToPool(b[0].fr)
 			*buf = b[1:]
 		}
 		if total == len(p) {

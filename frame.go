@@ -82,7 +82,8 @@ func newLenFrame(flags byte, streamID, length uint32, data []byte) LenFrame {
 		}
 	}
 	//fr := make(Frame, flen)
-	fr := LenFrame(getBytesFromPool(flen + 4))
+	//fr := LenFrame(getBytesFromPool(flen + 4))
+	fr := make(LenFrame, flen+4)
 	fr.Frame().Header().encode(flags, streamID)
 	if nil != data {
 		copy(fr.Frame().Body(), data)

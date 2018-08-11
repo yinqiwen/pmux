@@ -121,7 +121,7 @@ func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.
 	atomic.AddInt32(&s.sendingNum, 1)
 	if s.IsShutdown() {
 		atomic.AddInt32(&s.sendingNum, -1)
-		putBytesToPool(frame)
+		//putBytesToPool(frame)
 		return ErrSessionShutdown
 	}
 	defer atomic.AddInt32(&s.sendingNum, -1)
@@ -133,10 +133,10 @@ func (s *Session) doWriteFrame(frame LenFrame, noWait bool, timeout <-chan time.
 	select {
 	case s.sendCh <- ready:
 	case <-s.shutdownCh:
-		putBytesToPool(frame)
+		//putBytesToPool(frame)
 		return ErrSessionShutdown
 	case <-timeout:
-		putBytesToPool(frame)
+		//putBytesToPool(frame)
 		return ErrConnectionWriteTimeout
 	}
 	if !noWait {
@@ -242,8 +242,8 @@ func (s *Session) recvFrame(reader io.Reader) (Frame, error) {
 	if length > maxDataPacketSize {
 		return nil, ErrToolargeDataFrame
 	}
-	//buf := make([]byte, length)
-	buf := getBytesFromPool(int(length))
+	buf := make([]byte, length)
+	//buf := getBytesFromPool(int(length))
 	_, err = io.ReadAtLeast(reader, buf, len(buf))
 	if nil != err {
 		return nil, err
@@ -285,21 +285,21 @@ func (s *Session) recvLoop() error {
 			err = s.handleData(frame)
 		case flagSYN:
 			err = s.handleSYN(frame)
-			putBytesToPool(frame)
+			//putBytesToPool(frame)
 		case flagFIN:
 			err = s.handleFIN(frame)
-			putBytesToPool(frame)
+			//putBytesToPool(frame)
 		case flagWindowUpdate:
 			err = s.handleWindowUpdate(frame)
-			putBytesToPool(frame)
+			//putBytesToPool(frame)
 		case flagPing:
 			var timeout <-chan time.Time
 			s.writeFrameNowait(newLenFrame(flagPingACK, frame.Header().StreamID(), 0, nil), timeout)
-			putBytesToPool(frame)
+			//putBytesToPool(frame)
 		case flagPingACK:
 			asyncNotify(s.pingCh)
 			//fmt.Printf("####Recv flagPingACK\n")
-			putBytesToPool(frame)
+			//putBytesToPool(frame)
 		default:
 			return ErrInvalidMsgType
 
@@ -324,7 +324,7 @@ func (s *Session) handleData(frame Frame) error {
 		return stream.offerData(frame)
 	} else {
 		s.closeRemoteStream(frame.Header().StreamID(), false)
-		putBytesToPool(frame)
+		//putBytesToPool(frame)
 	}
 	return nil
 }
@@ -395,7 +395,7 @@ func (s *Session) send() {
 			_, err = wbuffers.WriteTo(s.connWriter)
 		}
 		for _, frame := range frs {
-			putBytesToPool(frame.F)
+			//putBytesToPool(frame.F)
 			if nil != frame.Err {
 				asyncSendErr(frame.Err, err)
 			}
@@ -442,11 +442,11 @@ func (s *Session) Close() error {
 		stream.forceClose(true)
 		return true
 	})
-	for len(s.sendCh) > 0 {
-		frame := <-s.sendCh
-		putBytesToPool(frame.F)
-	}
-	RecycleBufReaderToPool(s.connReader)
+	//for len(s.sendCh) > 0 {
+	//frame := <-s.sendCh
+	//putBytesToPool(frame.F)
+	//}
+	//RecycleBufReaderToPool(s.connReader)
 	for atomic.LoadInt32(&s.sendingNum) > 0 {
 		time.Sleep(10 * time.Nanosecond)
 	}
@@ -511,7 +511,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 		config: config,
 		// logger:     log.New(config.LogOutput, "", log.LstdFlags),
 		conn:       conn,
-		connReader: NewBufReaderFromPool(conn),
+		connReader: bufio.NewReader(conn),
 		connWriter: conn,
 		// pings:      make(map[uint32]chan struct{}),
 		//streams: make(map[uint32]*Stream),
